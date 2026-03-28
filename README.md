@@ -4,61 +4,55 @@ Route AI tasks to Claude, GPT-4o, or Perplexity. See exactly what each call cost
 
 ---
 
-## The problem
+## The problem it solves
 
-AI coding agents on Replit and Vercel are unpredictable — they break things unexpectedly and burn through budgets without warning. OrchestraLay puts you back in control: it picks the right model for each task, shows you the cost down to fractions of a cent, and requires your approval on every file change before anything is applied.
+AI coding agents on Replit and Vercel are unpredictable — they burn through budgets without warning and make breaking changes you only discover after the damage is done. OrchestraLay puts you in control:
 
----
-
-## How it works
-
-1. You submit a task via CLI or API with a prompt, task type, and optional budget cap
-2. OrchestraLay routes to the best available model based on cost, health, and task type
-3. If a model fails, it automatically fails over to the next best option
-4. Every file change is shown as a diff preview — flagged if it looks dangerous
-5. You approve, then run `apply` to write changes to disk
-
----
-
-## Stack
-
-Node 20 · Express · tRPC · Drizzle ORM · Supabase PostgreSQL · pg-boss · Vite · React 19 · Wouter · TailwindCSS · Railway
+- Routes each task to the best available model based on cost, health, and task type
+- Shows the cost down to fractions of a cent per model call
+- Requires your explicit approval on every file change before anything is written to disk
+- Falls back to the next model automatically if one fails or times out
 
 ---
 
 ## Quick start
+
 ```bash
 # 1. Clone and install
 git clone https://github.com/your-org/orchestralay
 cd orchestralay
 npm install
 
-# 2. Set up environment
+# 2. Configure environment
 cp .env.example .env
-# Fill in SUPABASE_URL, DATABASE_URL, ANTHROPIC_API_KEY, OPENAI_API_KEY, PERPLEXITY_API_KEY
+# Required: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
+#           DATABASE_URL, ANTHROPIC_API_KEY, OPENAI_API_KEY, PERPLEXITY_API_KEY
 
-# 3. Run database migrations
+# 3. Run migrations
 npm run db:migrate
 
-# 4. Start development server
+# 4. Start dev server
 npm run dev
+# → API:       http://localhost:3001
+# → Dashboard: http://localhost:5173
 ```
 
-Open `http://localhost:5173` → sign up → copy your API key.
+Sign up at `http://localhost:5173` → copy your API key from the dashboard.
 
 ---
 
 ## CLI
+
 ```bash
-# Install globally or use npx
+# Install
 npm install -g @orchestralay/cli
 
 # Submit a task
 ORCHESTRALAY_API_KEY=olay_xxx orchestralay submit \
-  --prompt "Refactor this function to use async/await" \
+  --prompt "Refactor this function to use async/await and proper error handling" \
   --type refactoring
 
-# Check task status
+# Check status
 orchestralay status --task-id task_a3f9xx
 
 # Apply approved diffs to disk
@@ -66,46 +60,52 @@ orchestralay apply --task-id task_a3f9xx
 
 # Preview without writing
 orchestralay apply --task-id task_a3f9xx --dry-run
+
+# Revert applied changes
+orchestralay apply --task-id task_a3f9xx --revert
 ```
+
+Tasks stream status in real time: `submitted → routing → executing → completed`
 
 ---
 
 ## Dashboard
 
-Three views:
+Three views at `http://localhost:5173`:
 
-**Overview** — live task feed showing status, model used, and cost per task. Updates in real time via Supabase Realtime.
+**Overview** — live task feed showing task ID, prompt, model used, status, cost, and age. Updates in real time via Supabase Realtime.
 
-**Costs** — 7-day spend chart broken down by model, month-to-date total against your plan budget, per-model token and cost breakdown.
+**Costs** — 7-day spend breakdown by model, month-to-date total against your plan budget, exact token and cost figures per model.
 
-**Diff review** — every pending file change across all projects. Approve individually or bulk-approve all safe diffs. Blocked diffs (safety rule violations) require manual review.
+**Diff review** — every pending file change across your projects. Flagged diffs show why. Blocked diffs require changing project safety settings before they can be applied.
+
+---
+
+## How routing works
+
+Each task runs through 6 gates in order:
+
+1. **Preference** — use your `--model` flag if provided, otherwise use the default ranking for the task type
+2. **Budget** — filter out models that would exceed your budget cap
+3. **Health** — skip models with too many recent failures (circuit breaker)
+4. **Concurrency** — skip models at their concurrent request limit
+5. **Select** — first remaining candidate wins
+6. **Fallback** — if the selected model fails mid-execution, automatically retry with the next
+
+The routing decision (which model was chosen and why) is stored with every task and visible in the dashboard.
 
 ---
 
 ## Supported models
 
-| Model | Best for | Cost |
+| Model | Best for | Input / Output per 1M tokens |
 |---|---|---|
-| claude-3-5-sonnet | Code generation, refactoring, review | $3.00 / $15.00 per 1M tokens |
-| gpt-4o | Analysis, debugging | $2.50 / $10.00 per 1M tokens |
-| perplexity-sonar-pro | Web-grounded analysis | $3.00 / $15.00 per 1M tokens |
-| claude-3-haiku | Fast debugging, low cost | $0.25 / $1.25 per 1M tokens |
-| gpt-4o-mini | Budget analysis | $0.15 / $0.60 per 1M tokens |
-| perplexity-sonar | Budget analysis | $0.80 / $0.80 per 1M tokens |
-
-The router selects automatically. Override with `--model claude-3-5-sonnet`.
-
----
-
-## Pricing
-
-| Plan | Price | Tokens | Team seats |
-|---|---|---|---|
-| Starter | $29/mo | 500k | 1 |
-| Pro | $99/mo | 2M | 5 |
-| Enterprise | Custom | Unlimited | Unlimited |
-
-7-day free trial. Overage billed at $0.002 per 1k tokens — no hard blocks.
+| claude-3-5-sonnet | Code generation, refactoring, review | $3.00 / $15.00 |
+| gpt-4o | Analysis, debugging, review | $2.50 / $10.00 |
+| perplexity-sonar-pro | Web-grounded analysis | $3.00 / $15.00 |
+| claude-3-haiku | Fast debugging, low-cost tasks | $0.25 / $1.25 |
+| gpt-4o-mini | Budget analysis | $0.15 / $0.60 |
+| perplexity-sonar | Budget analysis | $0.80 / $0.80 |
 
 ---
 
@@ -114,27 +114,59 @@ The router selects automatically. Override with `--model claude-3-5-sonnet`.
 OrchestraLay blocks diffs that attempt to:
 
 - Modify `.env` files or lockfiles
-- Delete files (configurable per project)
-- Change framework config files (`package.json`, `tsconfig.json`, etc.)
+- Delete files _(configurable per project)_
+- Change framework config files (`package.json`, `tsconfig.json`, `vite.config.*`)
 - Delete test files
-- Match paths in your custom blocklist
-- Introduce hardcoded secrets or API keys
+- Introduce hardcoded secrets, API keys, or credentials
+- Match paths on your custom blocklist
 
-Blocked diffs cannot be approved via API — they require a human to review and update project safety settings.
+Flagged diffs show a warning but can still be approved. Blocked diffs cannot be approved via the API — they require a human to review and update project safety settings first.
+
+---
+
+## Pricing
+
+| Plan | Price | Tokens / month | Team seats |
+|---|---|---|---|
+| Starter | $29/mo | 500k | 1 |
+| Pro | $99/mo | 2M | 5 |
+| Enterprise | Custom | Unlimited | Unlimited |
+
+7-day free trial. Overage charged at $0.002 per 1k tokens — no hard blocks.
 
 ---
 
 ## Environment variables
 
-See `.env.example` for the full list. Required to start: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `PERPLEXITY_API_KEY`, `ALLOWED_ORIGINS`.
+| Variable | Required | Description |
+|---|---|---|
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_ANON_KEY` | Yes | Public anon key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Server-only admin key |
+| `DATABASE_URL` | Yes | Postgres connection string |
+| `ANTHROPIC_API_KEY` | Yes | Claude API access |
+| `OPENAI_API_KEY` | Yes | GPT-4o access |
+| `PERPLEXITY_API_KEY` | Yes | Perplexity access |
+| `ALLOWED_ORIGINS` | Yes | Comma-separated CORS allowlist |
+| `N8N_WEBHOOK_URL` | No | n8n webhook base URL for notifications |
+| `STRIPE_SECRET_KEY` | No | Required for billing |
+| `PORT` | No | Default 3001 |
+
+See `.env.example` for the full list with descriptions.
+
+---
+
+## Tech stack
+
+Node 20 · Express · tRPC · Drizzle ORM · Supabase PostgreSQL · pg-boss · Vite · React 19 · Wouter · TailwindCSS · Railway
 
 ---
 
 ## Architecture
 
-See [AGENTS.md](./AGENTS.md) for the complete architecture reference including data flow, layer boundaries, database schema, and design decisions.
+For complete architecture documentation — data flow, layer boundaries, routing logic, database schema, and all design decisions — see [AGENTS.md](./AGENTS.md).
 
-For Claude Code and AI agent instructions see [CLAUDE.md](./CLAUDE.md).
+For Claude Code and AI agent coding rules — build order, known bugs, conventions, and hard prohibitions — see [CLAUDE.md](./CLAUDE.md).
 
 ---
 
