@@ -1,6 +1,6 @@
 # tRPC API Reference
 
-> **Status:** Pre-implementation. This documents the planned tRPC procedures.
+> **Status:** Implemented in `server/routers/tasks.ts`, `server/routers/diffs.ts`, `server/routers/dashboard.ts`, and `server/routers/auth.ts`. Merged in `server/routers/index.ts`.
 
 ---
 
@@ -8,7 +8,7 @@
 
 The tRPC endpoint is at `/trpc` on the server (default `http://localhost:3001/trpc`).
 
-All procedures use superjson for serialization. The frontend uses `@trpc/react-query`, the CLI uses `@trpc/client` directly.
+All procedures use superjson for serialization (handles Date, BigInt, etc.). The frontend uses `@trpc/client` with `httpBatchLink`, and the CLI uses `@trpc/client` directly. Error formatting strips stack traces in production (`NODE_ENV=production`).
 
 ---
 
@@ -40,11 +40,7 @@ Submit a new AI task for processing.
   taskType: 'code_generation' | 'debugging' | 'refactoring' | 'analysis' | 'review'
   preferredModels?: string[]  // Optional model preference order
   budgetCents?: number        // Optional max cost in cents
-  timeoutSeconds?: number     // Optional model call timeout (default varies by model)
-  safetyOverrides?: {         // Optional per-task safety rule overrides
-    allowFileDeletion?: boolean
-    allowFrameworkChanges?: boolean
-  }
+  timeoutSeconds?: number     // Optional model call timeout (default 120s)
 }
 ```
 
@@ -70,21 +66,23 @@ Get current status and metadata for a task.
 
 **Input:** `{ taskId: string }`
 
-**Response:**
+**Response:** Full task record plus `pendingDiffs` count:
 ```typescript
 {
   id: string
   status: 'submitted' | 'routing' | 'executing' | 'completed' | 'failed' | 'cancelled'
   taskType: string
   prompt: string
-  modelUsed?: string
-  costCents?: number
-  metadata?: {
+  selectedModel: string | null
+  actualCostCents: number | null
+  estimatedCostCents: number | null
+  metadata: {
     reasoning: string[]       // Routing decision log
-  }
-  diffCount: number
+  } | null
+  errorMessage: string | null
+  pendingDiffs: number
   createdAt: string
-  completedAt?: string
+  completedAt: string | null
 }
 ```
 
@@ -102,6 +100,14 @@ List tasks for the team with pagination.
   limit?: number              // Default 50
   offset?: number             // Default 0
   status?: string             // Filter by status
+}
+```
+
+**Response:**
+```typescript
+{
+  tasks: Task[]
+  total: number
 }
 ```
 
@@ -129,7 +135,22 @@ Get all diffs for a specific task.
 
 **Input:** `{ taskId: string }`
 
-**Response:** Array of diff summaries (path, operation, line counts, safety violations, status).
+**Response:** Array of diff summaries:
+```typescript
+Array<{
+  id: string
+  filePath: string
+  operation: 'create' | 'modify' | 'delete'
+  linesAdded: number
+  linesRemoved: number
+  status: string
+  flagged: boolean
+  blocked: boolean
+  safetyViolations: Array<{ rule: string, severity: 'warn' | 'block', message: string }>
+  applied: boolean
+  createdAt: string
+}>
+```
 
 ---
 
@@ -197,10 +218,11 @@ Mark diffs as applied after writing to disk (called by CLI).
 ---
 
 #### `diffs.revert`
-Mark diffs as reverted (called after CLI revert).
+Revert a single applied diff (resets to pending, clears applied state).
 
 - **Guard:** `authedProcedure`
-- **Input:** `{ diffIds: string[] }`
+- **Input:** `{ diffId: string }`
+- **Response:** `{ beforeContent: string | null, filePath: string }` — the CLI uses this to restore the original file
 
 ---
 
@@ -215,10 +237,18 @@ Aggregated metrics for the team dashboard.
 ```typescript
 {
   tasksToday: number
-  costToday: number           // cents
+  costTodayCents: number      // integer cents
   pendingDiffs: number
   failedToday: number
-  recentTasks: Task[]         // Last 50 tasks
+  recentTasks: Array<{
+    id: string
+    prompt: string
+    taskType: string
+    status: string
+    selectedModel: string | null
+    actualCostCents: number | null
+    createdAt: string
+  }>
 }
 ```
 
@@ -232,17 +262,20 @@ Cost breakdown for the costs page.
 **Input:**
 ```typescript
 {
-  billingPeriod?: string      // YYYY-MM format, defaults to current month
+  days?: number               // 1-90, defaults to 7
 }
 ```
 
 **Response:**
 ```typescript
 {
-  monthToDate: number         // cents
-  budgetCents: number
-  dailyBreakdown: { date: string, model: string, costCents: number }[]
-  modelBreakdown: { model: string, requests: number, tokens: number, costCents: number }[]
+  budget: {
+    monthlyBudgetCents: number
+    currentSpendCents: number
+    billingPeriod: string       // YYYY-MM
+  } | null
+  dailyCosts: Array<{ date: string, modelName: string, totalCents: number, totalTokens: number, requestCount: number }>
+  modelBreakdown: Array<{ modelName: string, provider: string, totalCents: number, totalTokens: number, requestCount: number }>
 }
 ```
 
@@ -268,17 +301,34 @@ Create a new API key for a project.
 **Response:**
 ```typescript
 {
-  keyId: string
+  id: string
   rawKey: string              // Shown ONCE — not stored, not retrievable
+  prefix: string              // e.g., "olay_a1b2c3"
+  name: string
 }
 ```
 
 ---
 
 #### `auth.listApiKeys`
-List API keys for the team (hashes only, never raw keys).
+List API keys for a project (hashes only, never raw keys).
 
 - **Guard:** `dashboardProcedure`
+- **Input:** `{ projectId: string }`
+
+**Response:** Array of:
+```typescript
+Array<{
+  id: string
+  name: string
+  keyPrefix: string
+  scopes: string[]
+  revoked: boolean
+  expiresAt: string | null
+  lastUsedAt: string | null
+  createdAt: string
+}>
+```
 
 ---
 
@@ -307,8 +357,8 @@ Note: `NOT_FOUND` is returned instead of `FORBIDDEN` when the resource exists bu
 
 ## Rate Limiting
 
-Rate limits are per API key, with two buckets:
-- **Per-minute:** Short burst protection
-- **Per-day:** Total daily usage cap
+Rate limits are per API key, with two buckets (implemented in `server/lib/rateLimiter.ts`):
+- **Per-minute:** 30 requests/minute
+- **Per-day:** 1,000 requests/day
 
-When exceeded, the error response includes `retryAfter` (seconds until the bucket resets). Rate limit state is stored in PostgreSQL (`rate_limit_buckets` table).
+When exceeded, the error response includes `retryAfter` (seconds until the bucket resets). Rate limit state is stored in PostgreSQL (`rate_limit_buckets` table). Window resets are automatic — when the elapsed time exceeds the window duration, the counter resets.

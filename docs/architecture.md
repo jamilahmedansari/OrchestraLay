@@ -1,6 +1,6 @@
 # System Architecture
 
-> **Status:** Pre-implementation. This document describes the target architecture. It will be updated as each subsystem comes online.
+> **Status:** Implemented (steps 1-29 of 30). Backend, frontend, CLI, and Dockerfile are complete. Remaining: step 26 (E2E verification with live Supabase) and step 30 (Stripe checkout + webhook).
 
 ---
 
@@ -109,18 +109,39 @@ Runs on the developer's machine. Submits tasks, polls status, fetches approved d
 
 ## Database
 
-14 tables in Supabase PostgreSQL via Drizzle ORM. See the full schema in [AGENTS.md](../AGENTS.md#database--14-tables-relationships).
+14 tables in Supabase PostgreSQL via Drizzle ORM, defined in `server/db/schema.ts`.
 
 Core relationships:
 ```
-teams
-  └── projects
-       ├── api_keys → rate_limit_buckets
-       ├── tasks → model_results, diffs
-       └── cost_logs
+users
+  └── team_members ──► teams
+                        ├── projects
+                        │    ├── api_keys → rate_limit_buckets
+                        │    ├── tasks → model_results, diffs
+                        │    ├── integrations
+                        │    └── webhooks
+                        ├── cost_logs
+                        └── team_billing_history
+feature_flags            (standalone)
+audit_logs               (nullable FKs — survives cascade deletes)
 ```
 
-All cost aggregation uses `billing_period` (format: `YYYY-MM`) as the primary dimension.
+Key schema details:
+- All FKs use `ON DELETE CASCADE` except `audit_logs` which uses `SET NULL`
+- `billing_period` (format: `YYYY-MM`) is the primary dimension for cost aggregation
+- `teams.currentMonthSpendCents` is updated atomically via raw SQL (the only raw SQL in the codebase)
+- `projects.safetyRules` is JSONB: `{ allowFileDeletion?, allowFrameworkChanges?, allowTestFileDeletion?, customBlockedPaths?: string[] }`
+- `tasks.status` values: `submitted`, `routing`, `executing`, `completed`, `failed`, `cancelled`
+- `diffs.hunks` stores structured hunk data: `{ oldStart, oldLines, newStart, newLines, lines: string[] }`
+
+---
+
+## Module System
+
+The codebase is **ESM-only**. All local imports must use `.js` extensions even in `.ts` files:
+```typescript
+import { db } from '../db/index.js'
+```
 
 ---
 
@@ -135,3 +156,16 @@ The server must start in this exact sequence:
 ```
 
 Starting the server before the worker means tasks are accepted but never processed. Starting the worker before the queue means it crashes.
+
+This was originally Bug 3 in CLAUDE.md — now fixed in `server/index.ts` (line ~36-37).
+
+---
+
+## Health Check
+
+The server exposes a health endpoint at:
+```
+GET /health → { status: 'ok', timestamp: '...' }
+```
+
+This is used by Railway's healthcheck (configured in `railway.toml` with 30s timeout).

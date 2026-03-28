@@ -1,6 +1,6 @@
 # Diff Engine & Safety Rules
 
-> **Status:** Pre-implementation. This document describes the diff preview and safety system.
+> **Status:** Implemented in `server/lib/outputParser.ts`, `server/lib/diffComputer.ts`, `server/lib/safetyRules.ts`, and `server/lib/diffEngine.ts`.
 
 ---
 
@@ -37,6 +37,20 @@ Model Output
 ```
 
 Each file operation becomes one row in the `diffs` table, containing: the unified diff hunks, before/after content, safety violations, and blocked/flagged status.
+
+The model output is expected in XML format:
+```xml
+<file_changes>
+  <file>
+    <path>src/app.ts</path>
+    <operation>modify</operation>
+    <before_content>...</before_content>
+    <after_content>...</after_content>
+  </file>
+</file_changes>
+```
+
+Path sanitization rejects `../`, leading `/`, null bytes, and normalizes backslashes. Invalid paths are silently skipped. Binary files are detected by checking for null bytes in the first 8000 characters — no hunks are generated for binary files.
 
 ---
 
@@ -133,7 +147,7 @@ If you applied diffs and need to undo:
 orchestralay apply --task-id <id> --revert
 ```
 
-This restores the `beforeContent` for each applied diff back to disk and marks the diffs as reverted.
+This calls `diffs.revert` per diff, which resets `applied=false`, `appliedAt=null`, and `status='pending'` in the database. The CLI then restores `beforeContent` to disk (or deletes the file if it was a `create` operation with no prior content).
 
 ---
 

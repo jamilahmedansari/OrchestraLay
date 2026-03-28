@@ -1,6 +1,6 @@
 # Deployment & Configuration
 
-> **Status:** Pre-implementation. This documents the target deployment setup.
+> **Status:** Implemented. Dockerfile, railway.toml, and .env.example are in place. Remaining: Stripe env vars (step 30).
 
 ---
 
@@ -59,19 +59,16 @@ This starts both:
 
 | Script | Description |
 |---|---|
-| `npm run dev` | Start server + client in parallel |
-| `npm run dev:server` | Start server only (tsx watch mode) |
-| `npm run dev:client` | Start Vite dev server only |
-| `npm run build` | Build both client and server for production |
-| `npm run start` | Run production server |
+| `npm run dev` | Start server with tsx watch (auto-reload on changes) |
+| `npm run dev:frontend` | Start Vite dev server only (port 5173) |
+| `npm run build` | Compile TypeScript + build Vite frontend |
+| `npm run start` | Run production server (`node dist/server/index.js`) |
 | `npm run db:generate` | Generate Drizzle migration files |
 | `npm run db:migrate` | Run pending migrations |
 | `npm run db:push` | Push schema directly (dev only) |
 | `npm run db:studio` | Open Drizzle Studio (database browser) |
-| `npm run typecheck` | Run TypeScript type checking |
-| `npm run lint` | Run ESLint |
-| `npm run test` | Run tests (Vitest) |
-| `npm run test:watch` | Run tests in watch mode |
+
+**Note:** Run `npm run dev` and `npm run dev:frontend` in separate terminals for full-stack development. The Vite dev server proxies `/trpc` requests to `http://localhost:3001`.
 
 ---
 
@@ -93,22 +90,26 @@ OrchestraLay deploys as a **single service** on Railway — server and worker ru
 
 ### Dockerfile
 
-The Dockerfile builds both client and server:
-1. Install dependencies
-2. Build Vite frontend (`npm run build:client`)
-3. Build server TypeScript (`npm run build:server`)
-4. Serve static frontend from Express in production
-5. Start with `npm run start`
+Multi-stage build (3 stages, Node 20-slim base):
+
+1. **base** — Install production dependencies only (`npm ci --omit=dev`)
+2. **build** — Install all dependencies, copy source, run `npm run build` (produces `dist/server/` and `dist/client/`)
+3. **production** — Copy `node_modules` from base, `dist/server` and `dist/client` from build, expose port 3001, run `node dist/server/index.js`
+
+The frontend is served as static files from Express in production (both from the same container).
 
 ### railway.toml
 
 ```toml
 [build]
 builder = "dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-healthcheckPath = "/trpc/health"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
 restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
 ```
 
 ### Environment variables on Railway
@@ -130,7 +131,7 @@ The server **must** start in this exact sequence:
 **Why this order matters:**
 - Queue before worker: Worker registration requires an active queue connection
 - Worker before server: If the server accepts tasks before the worker is ready, tasks are enqueued but never processed
-- This is documented as Bug 3 in CLAUDE.md — the startup order is load-bearing
+- This was originally Bug 3 in CLAUDE.md — now fixed in `server/index.ts`
 
 ---
 
@@ -166,5 +167,5 @@ Never use `*` as the CORS origin when credentials (cookies/auth headers) are in 
 
 The server exposes a health endpoint for Railway's healthcheck:
 ```
-GET /trpc/health → 200 OK
+GET /health → { "status": "ok", "timestamp": "2026-03-28T..." }
 ```

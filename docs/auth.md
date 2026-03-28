@@ -1,6 +1,6 @@
 # Authentication
 
-> **Status:** Pre-implementation. This document describes the two authentication surfaces.
+> **Status:** Implemented in `server/trpc/context.ts`, `server/trpc/guards.ts`, and `server/lib/hashKey.ts`.
 
 ---
 
@@ -39,7 +39,7 @@ Used by the React dashboard in the browser.
 { type: 'dashboard', userId: string, teamId: string, role: string }
 ```
 
-**Roles:** `owner`, `admin`, `member` — enforced by guard middleware, not by procedures.
+**Roles:** `admin`, `member` (default) — enforced by guard middleware, not by procedures. The `team_members` table has a unique constraint on `(userId, teamId)`.
 
 ---
 
@@ -65,7 +65,7 @@ olay_a1b2c3d4e5f6...  (66 characters total)
 { type: 'apikey', projectId: string, teamId: string, scopes: string[], keyId: string }
 ```
 
-**Scopes:** `tasks:write`, `tasks:read`, `diffs:read`, `diffs:write` — checked by `apiKeyProcedure(scope)` middleware.
+**Scopes:** Default is `['tasks:write']`. Checked by `apiKeyProcedure(scope)` middleware. The `lastUsedAt` timestamp is updated on every successful auth (fire-and-forget, never awaited in the hot path).
 
 ---
 

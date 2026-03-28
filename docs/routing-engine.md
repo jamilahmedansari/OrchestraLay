@@ -1,6 +1,6 @@
 # Model Routing Engine
 
-> **Status:** Pre-implementation. This document describes how the 6-gate routing engine will work.
+> **Status:** Implemented in `server/lib/modelRegistry.ts`, `server/lib/modelHealth.ts`, and `server/lib/modelRouter.ts`.
 
 ---
 
@@ -43,24 +43,26 @@ Gates 2, 3, and 4 each have a safety net: if **all** candidates are eliminated, 
 
 ## Supported Models
 
-| Model | Provider | Best For | Input $/1M | Output $/1M |
-|---|---|---|---|---|
-| claude-3-5-sonnet | Anthropic | Code generation, refactoring, review | $3.00 | $15.00 |
-| claude-3-haiku | Anthropic | Fast debugging, low-cost tasks | $0.25 | $1.25 |
-| gpt-4o | OpenAI | Analysis, debugging, review | $2.50 | $10.00 |
-| gpt-4o-mini | OpenAI | Budget analysis | $0.15 | $0.60 |
-| perplexity-sonar-pro | Perplexity | Web-grounded analysis | $3.00 | $15.00 |
-| perplexity-sonar | Perplexity | Budget analysis | $0.80 | $0.80 |
+| Model | Provider | Best For | Input $/1M | Output $/1M | Max Concurrent |
+|---|---|---|---|---|---|
+| claude-3-5-sonnet | Anthropic | Code generation, refactoring, review | $3.00 | $15.00 | 10 |
+| claude-3-haiku | Anthropic | Fast debugging, low-cost tasks | $0.25 | $1.25 | 20 |
+| gpt-4o | OpenAI | Analysis, debugging, review | $2.50 | $10.00 | 10 |
+| gpt-4o-mini | OpenAI | Budget analysis | $0.15 | $0.60 | 30 |
+| perplexity-sonar-pro | Perplexity | Web-grounded analysis | $3.00 | $15.00 | 5 |
+| perplexity-sonar | Perplexity | Budget analysis | $0.80 | $0.80 | 10 |
 
-Each model has a `strengths[]` list. The default ranking per task type is:
+Each model has a `strengths[]` list and pre-measured average output token counts per task type (used for cost estimation). The Anthropic caller maps `claude-3-5-sonnet` to the actual API model ID `claude-3-5-sonnet-20241022`. Perplexity uses the OpenAI SDK pointed at `https://api.perplexity.ai`. All callers set `max_tokens: 4096`.
+
+The default ranking per task type (from `DEFAULT_MODEL_RANKING` in `modelRegistry.ts`):
 
 | Task Type | Default Model Order |
 |---|---|
-| `code_generation` | claude-3-5-sonnet → gpt-4o → claude-3-haiku |
-| `debugging` | claude-3-haiku → gpt-4o → claude-3-5-sonnet |
-| `refactoring` | claude-3-5-sonnet → gpt-4o → gpt-4o-mini |
-| `analysis` | gpt-4o → perplexity-sonar-pro → gpt-4o-mini |
-| `review` | claude-3-5-sonnet → gpt-4o → claude-3-haiku |
+| `code_generation` | claude-3-5-sonnet → gpt-4o → claude-3-haiku → gpt-4o-mini → perplexity-sonar-pro → perplexity-sonar |
+| `debugging` | claude-3-haiku → gpt-4o → claude-3-5-sonnet → gpt-4o-mini → perplexity-sonar-pro → perplexity-sonar |
+| `refactoring` | claude-3-5-sonnet → gpt-4o → claude-3-haiku → gpt-4o-mini → perplexity-sonar-pro → perplexity-sonar |
+| `analysis` | gpt-4o → perplexity-sonar-pro → claude-3-5-sonnet → claude-3-haiku → gpt-4o-mini → perplexity-sonar |
+| `review` | claude-3-5-sonnet → gpt-4o → claude-3-haiku → gpt-4o-mini → perplexity-sonar-pro → perplexity-sonar |
 
 ---
 
@@ -142,3 +144,16 @@ Example reasoning:
 - **Actual cost** is calculated after the model call using real token counts from the API response. This is what's stored in `cost_logs` and shown in the dashboard.
 
 Both are in integer cents, using `Math.ceil()` to avoid rounding down.
+
+The estimation formula:
+```
+totalCostCents = ceil((promptTokens / 1M) * inputCostPer1M + (avgOutputTokens / 1M) * outputCostPer1M)
+```
+
+Token estimation (`server/lib/tokenizer.ts`) uses a simple character-based approximation:
+```typescript
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+```
+This is called before `resolveModel()` — the worker will crash if this file is missing (originally Bug 2, now fixed).

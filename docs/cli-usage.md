@@ -1,6 +1,6 @@
 # CLI Guide
 
-> **Status:** Pre-implementation. This documents the planned CLI commands.
+> **Status:** Implemented in `cli/index.ts` (208 lines). Shebang: `#!/usr/bin/env node`.
 
 ---
 
@@ -22,7 +22,7 @@ export ORCHESTRALAY_API_KEY=olay_your_key_here
 
 Get your API key from the dashboard: sign in → Auth → Create API Key → copy the key (shown once).
 
-By default the CLI connects to `http://localhost:3001`. Set `ORCHESTRALAY_URL` to point at a different server.
+By default the CLI connects to `http://localhost:3001`. Set `ORCHESTRALAY_API_URL` to point at a different server.
 
 ---
 
@@ -51,20 +51,11 @@ orchestralay submit \
 2. Polls `tasks.getStatus` every 2 seconds
 3. Prints the final result: model used, cost, and diff count
 
-**Example output:**
-```
-✓ Task task_a3f9xx submitted
-  Routing... selected claude-3-5-sonnet
-  Executing...
-  Completed in 4.2s
+**Output behavior:**
+- **stderr:** Human-readable status updates (submitting, polling with `\r` overwrite, completion summary)
+- **stdout:** JSON object `{ taskId, status }` for scripting/piping
 
-  Model:  claude-3-5-sonnet
-  Cost:   12¢
-  Diffs:  2 file(s) changed
-
-  Run 'orchestralay status --task-id task_a3f9xx' for details
-  Run 'orchestralay apply --task-id task_a3f9xx' to apply changes
-```
+The CLI updates the status line in-place during polling (showing current status + model when available). On completion, it prints a summary to stderr with model, cost (formatted as `$X.XXXX`), and diff count. Exit code 1 on failure, 0 on success.
 
 ---
 
@@ -74,12 +65,9 @@ orchestralay submit \
 orchestralay status --task-id task_a3f9xx
 ```
 
-**Output includes:**
-- Current status (`submitted`, `routing`, `executing`, `completed`, `failed`, `cancelled`)
-- Model used
-- Cost in cents
-- Number of pending diffs
-- Routing reasoning (which gates passed/failed, why the model was chosen)
+**Output:**
+- **stderr:** Formatted status details (Task ID, Status, Type, Model, Cost, Diffs pending). If `metadata.reasoning` exists, prints routing decisions.
+- **stdout:** Full status object as JSON (for scripting)
 
 ---
 
@@ -105,10 +93,18 @@ orchestralay apply --task-id task_a3f9xx --revert
 | `--revert` | Restore original file contents and mark diffs as reverted |
 
 **Apply behavior:**
-1. Fetches all approved, non-applied diffs for the task via `diffs.getForTask`
-2. For each diff, fetches full content via `diffs.getContent`
-3. Writes files to the current working directory (create/modify/delete)
-4. Marks diffs as applied via `diffs.markApplied`
+1. Fetches all diffs for the task via `diffs.getForTask`
+2. Filters for `status=approved` AND `applied=false`
+3. For each diff, fetches full content via `diffs.getContent` (returns `{ operation, filePath, afterContent, linesAdded, linesRemoved }`)
+4. **delete:** Removes file via `fs.unlink()`
+5. **create/modify:** Creates parent directories via `fs.mkdir(dir, { recursive: true })`, writes file via `fs.writeFile(filePath, afterContent, 'utf-8')`
+6. Marks all applied diffs via `diffs.markApplied({ diffIds })`
+
+**Revert behavior:**
+1. Fetches diffs, filters for `applied=true`
+2. For each: calls `diffs.revert({ diffId })` which returns `{ beforeContent, filePath }`
+3. If `beforeContent` exists: restores file to disk
+4. If `beforeContent` is null (was a creation): deletes the file (silently ignores if already gone)
 
 **Important:** Only approved diffs are applied. If a diff is still pending or blocked, it's skipped. Approve diffs first in the dashboard or via the API.
 
