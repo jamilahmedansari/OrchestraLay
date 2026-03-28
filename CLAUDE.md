@@ -1,6 +1,46 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 > Read this file before touching any other file in this project.
+
+---
+
+## Development commands
+
+```bash
+npm install              # install dependencies
+npm run dev              # start dev server (tsx watch, port 3001)
+npm run build            # tsc + vite build
+npm run db:generate      # generate Drizzle migrations from schema changes
+npm run db:migrate       # run Drizzle migrations against DATABASE_URL
+npm run db:studio        # open Drizzle Studio GUI
+```
+
+Requires `.env` file with all variables from `.env.example` (Supabase, DATABASE_URL, API keys).
+
+---
+
+## Module system
+
+ESM (`"type": "module"` in package.json). All local imports must use `.js` extensions even though source files are `.ts`:
+```typescript
+import { db } from '../db/index.js'
+import { tasks } from '../db/schema.js'
+```
+
+---
+
+## Implementation status
+
+Steps 1–25 of the build order are complete (full backend). Remaining:
+- Step 26: End-to-end verification (requires Supabase project + env vars)
+- Step 27: Frontend (`src/` — directory exists, empty)
+- Step 28: CLI (`cli/` — directory exists, empty)
+- Step 29: Dockerfile + railway.toml
+- Step 30: Stripe checkout + webhook
+
+No tests or linting config exist yet.
 
 ---
 
@@ -62,41 +102,14 @@ OrchestraLay is a multi-model AI orchestration SaaS. It accepts developer tasks 
 
 ---
 
-## Known bugs — fix these before the code would be called
+## Known bugs — all resolved
 
-### Bug 1 — req scope in resolveJwt
-`resolveJwt` references `req.query.teamId` but `req` is not in scope as a standalone function.
+All 4 bugs from the original design spec have been fixed in the current implementation:
 
-**Fix:** Change signature to `resolveJwt(token: string, req: Request)` and pass `req` explicitly from `resolveAuth(req: Request)`.
-
-### Bug 2 — estimateTokens never implemented
-`orchestrateTask.ts` calls `estimateTokens(prompt)` before `resolveModel()`. If the file is missing, the worker crashes on every task.
-
-**Fix:** Create `server/lib/tokenizer.ts`:
-```typescript
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
-}
-```
-
-### Bug 3 — worker never started
-Without calling `startOrchestrationWorker()` in `server/index.ts`, all tasks stay at `status: 'submitted'` forever.
-
-**Fix:** In `server/index.ts`, startup order must be:
-```typescript
-await getQueue()                    // 1. queue first
-await startOrchestrationWorker()    // 2. worker second
-app.listen(PORT, ...)               // 3. server last
-```
-
-### Bug 4 — missing imports in tasks.ts
-`routers/tasks.ts` uses `projects` (from `../db/schema`) and `count` (from `drizzle-orm`) but both are missing from imports.
-
-**Fix:** Add to top of `tasks.ts`:
-```typescript
-import { tasks, projects, modelResults, diffs, costLogs } from '../db/schema'
-import { eq, and, desc, inArray, count, gte, sql } from 'drizzle-orm'
-```
+1. **req scope in resolveJwt** — resolved: `resolveJwt(token, req)` signature in `server/trpc/context.ts:32`
+2. **estimateTokens never implemented** — resolved: `server/lib/tokenizer.ts` exists
+3. **worker never started** — resolved: startup order correct in `server/index.ts:36-37` (getQueue → startOrchestrationWorker → listen)
+4. **missing imports in tasks.ts** — resolved: all imports present in `server/routers/tasks.ts:6-7`
 
 ---
 
