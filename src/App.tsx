@@ -1,43 +1,33 @@
-import { Route, Switch, Link, useLocation } from 'wouter'
-import Overview from './pages/Overview'
-import Costs from './pages/Costs'
-import DiffReview from './pages/DiffReview'
+import { Link, Route, Switch } from 'wouter'
 
-const navLinks = [
+import { Costs } from './pages/Costs'
+import { DiffReview } from './pages/DiffReview'
+import { Overview } from './pages/Overview'
+
+const navItems = [
   { href: '/', label: 'Overview' },
   { href: '/costs', label: 'Costs' },
   { href: '/diffs', label: 'Diff Review' },
 ]
 
-export default function App() {
-  const [location] = useLocation()
-
+export function App() {
   return (
-    <div className="min-h-screen">
-      <nav className="bg-white border-b border-gray-200 px-6 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-8">
-            <h1 className="text-xl font-bold text-gray-900">OrchestraLay</h1>
-            <div className="flex gap-1">
-              {navLinks.map((link) => (
-                <Link key={link.href} href={link.href}>
-                  <span
-                    className={`px-3 py-2 rounded-md text-sm font-medium cursor-pointer ${
-                      location === link.href
-                        ? 'bg-gray-100 text-gray-900'
-                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
-                  >
-                    {link.label}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          </div>
+    <div className="app-shell">
+      <header className="hero">
+        <div>
+          <p className="eyebrow">OrchestraLay</p>
+          <h1>AI orchestration with explicit cost and diff control.</h1>
         </div>
-      </nav>
+        <nav className="nav">
+          {navItems.map((item) => (
+            <Link key={item.href} href={item.href} className="nav-link">
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+      </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-6">
+      <main className="page-shell">
         <Switch>
           <Route path="/" component={Overview} />
           <Route path="/costs" component={Costs} />
