@@ -1,69 +1,69 @@
 import { useEffect, useState } from 'react'
 import { trpc } from '../lib/trpc'
 
-type SafetyFlag = { rule: string; description: string; severity: 'warn' | 'block' }
+type SafetyViolation = { rule: string; severity: 'warn' | 'block'; description?: string }
 
-type Diff = {
+type DiffRow = {
   diff: {
     id: string
     filePath: string
     operation: string
-    unifiedDiff: string
-    safetyFlags: SafetyFlag[]
+    unifiedDiff: string | null
+    safetyViolations: SafetyViolation[]
     status: string
-    reviewedAt: Date | null
-    appliedAt: Date | null
+    flagged: boolean
+    blocked: boolean
+    linesAdded: number
+    linesRemoved: number
   }
   taskId: string
   taskType: string
 }
 
-function OperationBadge({ op }: { op: string }) {
-  const colors: Record<string, string> = { create: '#2a9d8f', modify: '#457b9d', delete: '#e76f51' }
+const OP_COLOR: Record<string, string> = { create: '#2a9d8f', modify: '#457b9d', delete: '#e76f51' }
+
+function OpBadge({ op }: { op: string }) {
   return (
-    <span style={{ padding: '2px 10px', borderRadius: 999, fontSize: '0.72rem', fontWeight: 700, background: colors[op] ?? '#aaa', color: '#fff', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+    <span style={{ padding: '2px 9px', borderRadius: 999, fontSize: '0.68rem', fontWeight: 700, background: OP_COLOR[op] ?? '#aaa', color: '#fff', textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>
       {op}
     </span>
   )
 }
 
-function SafetyBadge({ flag }: { flag: SafetyFlag }) {
-  const bg = flag.severity === 'block' ? '#e76f51' : '#e9c46a'
-  const color = flag.severity === 'block' ? '#fff' : '#333'
+function SafetyPill({ v }: { v: SafetyViolation }) {
   return (
-    <span title={flag.description} style={{ padding: '2px 10px', borderRadius: 999, fontSize: '0.72rem', fontWeight: 600, background: bg, color, marginRight: 6 }}>
-      {flag.severity === 'block' ? '🚫' : '⚠️'} {flag.rule}
+    <span title={v.description} style={{ padding: '2px 9px', borderRadius: 999, fontSize: '0.68rem', fontWeight: 600, background: v.severity === 'block' ? '#e76f51' : '#e9c46a', color: v.severity === 'block' ? '#fff' : '#333', flexShrink: 0 }}>
+      {v.severity === 'block' ? '🚫' : '⚠️'} {v.rule}
     </span>
   )
 }
 
-function DiffHunk({ unified }: { unified: string }) {
-  const lines = unified.split('\n')
+function DiffViewer({ unified }: { unified: string }) {
   return (
-    <pre style={{ margin: 0, fontSize: '0.75rem', lineHeight: 1.5, overflowX: 'auto', maxHeight: 300, padding: '12px', background: '#0d1117', borderRadius: 8, color: '#c9d1d9' }}>
-      {lines.map((line, i) => {
+    <pre style={{ margin: 0, fontSize: '0.72rem', lineHeight: 1.55, overflowX: 'auto', maxHeight: 320, padding: '12px 14px', background: '#0d1117', borderRadius: 10, color: '#c9d1d9' }}>
+      {unified.split('\n').map((line, i) => {
         let color = '#c9d1d9'
-        if (line.startsWith('+') && !line.startsWith('+++')) color = '#7ee787'
+        if      (line.startsWith('+') && !line.startsWith('+++')) color = '#7ee787'
         else if (line.startsWith('-') && !line.startsWith('---')) color = '#f85149'
-        else if (line.startsWith('@@')) color = '#79c0ff'
+        else if (line.startsWith('@@'))                            color = '#79c0ff'
         else if (line.startsWith('---') || line.startsWith('+++')) color = '#8b949e'
-        return <span key={i} style={{ display: 'block', color }}>{line}</span>
+        return <span key={i} style={{ display: 'block', color }}>{line || ' '}</span>
       })}
     </pre>
   )
 }
 
 export function DiffReview() {
-  const [diffs, setDiffs] = useState<Diff[]>([])
+  const [rows, setRows]      = useState<DiffRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError]    = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [acting, setActing] = useState<Set<string>>(new Set())
+  const [acting, setActing]  = useState<Set<string>>(new Set())
 
   async function load() {
     try {
-      const result = await trpc.diffs.listPending.query({ limit: 50 })
-      setDiffs(result as Diff[])
+      const res = await trpc.diffs.listPending.query({ limit: 100 })
+      setRows(res as DiffRow[])
       setError(null)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load diffs')
@@ -75,159 +75,157 @@ export function DiffReview() {
   useEffect(() => { load() }, [])
 
   function toggleExpand(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
+    setExpanded(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   }
 
+  function startActing(id: string) { setActing(prev => new Set(prev).add(id)) }
+  function stopActing(id: string)  { setActing(prev => { const n = new Set(prev); n.delete(id); return n }) }
+
   async function approve(diffId: string) {
-    setActing((prev) => new Set(prev).add(diffId))
-    try {
-      await trpc.diffs.approve.mutate({ diffId })
-      await load()
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Approve failed')
-    } finally {
-      setActing((prev) => { const n = new Set(prev); n.delete(diffId); return n })
-    }
+    startActing(diffId)
+    try { await trpc.diffs.approve.mutate({ diffId }); await load() }
+    catch (e: unknown) { setError(e instanceof Error ? e.message : 'Approve failed') }
+    finally { stopActing(diffId) }
   }
 
   async function reject(diffId: string) {
-    setActing((prev) => new Set(prev).add(diffId))
-    try {
-      await trpc.diffs.reject.mutate({ diffId })
-      await load()
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Reject failed')
-    } finally {
-      setActing((prev) => { const n = new Set(prev); n.delete(diffId); return n })
-    }
+    startActing(diffId)
+    try { await trpc.diffs.reject.mutate({ diffId }); await load() }
+    catch (e: unknown) { setError(e instanceof Error ? e.message : 'Reject failed') }
+    finally { stopActing(diffId) }
   }
 
-  async function approveAll(taskId: string) {
-    setActing((prev) => new Set(prev).add(taskId))
+  async function approveAll(taskId: string, diffIds: string[]) {
+    startActing(taskId)
     try {
-      await trpc.diffs.approveAll.mutate({ taskId })
+      await Promise.all(diffIds.map(diffId => trpc.diffs.approve.mutate({ diffId })))
       await load()
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Approve all failed')
-    } finally {
-      setActing((prev) => { const n = new Set(prev); n.delete(taskId); return n })
-    }
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : 'Approve all failed') }
+    finally { stopActing(taskId) }
   }
 
-  // Group diffs by taskId
-  const grouped: Record<string, Diff[]> = {}
-  for (const d of diffs) {
-    if (!grouped[d.taskId]) grouped[d.taskId] = []
-    grouped[d.taskId].push(d)
+  // Group by taskId
+  const grouped: Record<string, DiffRow[]> = {}
+  for (const r of rows) {
+    if (!grouped[r.taskId]) grouped[r.taskId] = []
+    grouped[r.taskId].push(r)
   }
 
   return (
     <section className="panel">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <h2 style={{ margin: 0 }}>Diff Review</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: '0.82rem', color: '#666' }}>{diffs.length} pending</span>
-          <button onClick={load} style={{ padding: '6px 14px', borderRadius: 999, border: 'none', background: '#eee', cursor: 'pointer', fontSize: '0.8rem' }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <span style={{ fontSize: '0.8rem', color: '#888' }}>{rows.length} pending</span>
+          <button onClick={load} style={{ padding: '5px 14px', borderRadius: 999, border: 'none', background: '#eee', cursor: 'pointer', fontSize: '0.78rem' }}>
             Refresh
           </button>
         </div>
       </div>
 
       {error && (
-        <div style={{ padding: '12px 16px', borderRadius: 12, background: '#fff0ed', color: '#e76f51', marginBottom: 20, fontSize: '0.875rem' }}>
+        <div style={{ padding: '10px 14px', borderRadius: 10, background: '#fff0ed', color: '#e76f51', marginBottom: 16, fontSize: '0.82rem' }}>
           {error}
         </div>
       )}
 
       {loading && <p style={{ color: '#888', fontSize: '0.875rem' }}>Loading…</p>}
 
-      {!loading && diffs.length === 0 && (
-        <div style={{ padding: '32px', textAlign: 'center', color: '#888', fontSize: '0.9rem' }}>
-          ✅ No pending diffs. All caught up.
+      {!loading && rows.length === 0 && (
+        <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>
+          ✅ No pending diffs — all caught up.
         </div>
       )}
 
       {Object.entries(grouped).map(([taskId, taskDiffs]) => {
-        const hasBlocked = taskDiffs.some((d) => d.diff.status === 'blocked')
-        const taskType = taskDiffs[0]?.taskType ?? ''
+        const hasBlocked     = taskDiffs.some(d => d.diff.status === 'blocked' || d.diff.blocked)
+        const approvableIds  = taskDiffs.filter(d => !d.diff.blocked && d.diff.status === 'pending').map(d => d.diff.id)
+        const taskType       = taskDiffs[0]?.taskType ?? ''
+
         return (
-          <div key={taskId} style={{ marginBottom: 24, border: '1px solid rgba(23,42,58,0.1)', borderRadius: 16, overflow: 'hidden' }}>
+          <div key={taskId} style={{ marginBottom: 20, border: '1px solid rgba(23,42,58,0.1)', borderRadius: 16, overflow: 'hidden' }}>
+
             {/* Task header */}
-            <div style={{ padding: '12px 16px', background: 'rgba(23,42,58,0.04)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ padding: '10px 16px', background: 'rgba(23,42,58,0.04)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: '#666' }}>{taskId.slice(0, 8)}…</span>
-                <span style={{ fontSize: '0.82rem', color: '#2a9d8f', fontWeight: 600 }}>{taskType.replace('_', ' ')}</span>
-                <span style={{ fontSize: '0.8rem', color: '#666' }}>{taskDiffs.length} file{taskDiffs.length !== 1 ? 's' : ''}</span>
+                <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: '#999' }}>{taskId.slice(0, 8)}…</span>
+                <span style={{ fontSize: '0.8rem', color: '#2a9d8f', fontWeight: 600 }}>{taskType.replace('_', ' ')}</span>
+                <span style={{ fontSize: '0.78rem', color: '#888' }}>{taskDiffs.length} file{taskDiffs.length !== 1 ? 's' : ''}</span>
               </div>
               <button
-                onClick={() => approveAll(taskId)}
-                disabled={hasBlocked || acting.has(taskId)}
+                onClick={() => approveAll(taskId, approvableIds)}
+                disabled={approvableIds.length === 0 || acting.has(taskId)}
                 style={{
-                  padding: '6px 16px', borderRadius: 999, border: 'none', cursor: hasBlocked ? 'not-allowed' : 'pointer',
-                  background: hasBlocked ? '#eee' : '#2a9d8f', color: hasBlocked ? '#aaa' : '#fff', fontSize: '0.8rem', fontWeight: 600,
+                  padding: '5px 14px', borderRadius: 999, border: 'none',
+                  cursor: approvableIds.length === 0 ? 'not-allowed' : 'pointer',
+                  background: approvableIds.length === 0 ? '#eee' : '#2a9d8f',
+                  color: approvableIds.length === 0 ? '#aaa' : '#fff',
+                  fontSize: '0.78rem', fontWeight: 600,
                 }}
-                title={hasBlocked ? 'Some diffs are blocked by safety rules' : 'Approve all diffs for this task'}
+                title={hasBlocked ? 'Some diffs are blocked by safety rules' : undefined}
               >
-                {acting.has(taskId) ? 'Approving…' : 'Approve All'}
+                {acting.has(taskId) ? 'Approving…' : `Approve All (${approvableIds.length})`}
               </button>
             </div>
 
-            {/* Each diff */}
-            {taskDiffs.map((d) => {
-              const isBlocked = d.diff.status === 'blocked'
-              const isExpanded = expanded.has(d.diff.id)
-              const isActing = acting.has(d.diff.id)
-              const flags = (d.diff.safetyFlags ?? []) as SafetyFlag[]
+            {/* Diffs */}
+            {taskDiffs.map(r => {
+              const d          = r.diff
+              const isBlocked  = d.blocked || d.status === 'blocked'
+              const isExpanded = expanded.has(d.id)
+              const isActing   = acting.has(d.id)
+              const violations = (d.safetyViolations ?? []) as SafetyViolation[]
 
               return (
-                <div key={d.diff.id} style={{ borderTop: '1px solid rgba(23,42,58,0.07)' }}>
-                  {/* Diff row */}
-                  <div style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                    <OperationBadge op={d.diff.operation} />
-                    <span style={{ fontFamily: 'monospace', fontSize: '0.82rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {d.diff.filePath}
+                <div key={d.id} style={{ borderTop: '1px solid rgba(23,42,58,0.07)' }}>
+                  <div style={{ padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <OpBadge op={d.operation} />
+
+                    <span style={{ fontFamily: 'monospace', fontSize: '0.78rem', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {d.filePath}
                     </span>
-                    {flags.map((f) => <SafetyBadge key={f.rule} flag={f} />)}
-                    <button
-                      onClick={() => toggleExpand(d.diff.id)}
-                      style={{ padding: '4px 12px', borderRadius: 999, border: '1px solid rgba(23,42,58,0.15)', background: '#fff', cursor: 'pointer', fontSize: '0.78rem' }}
-                    >
-                      {isExpanded ? 'Hide diff' : 'View diff'}
+
+                    <span style={{ fontSize: '0.7rem', color: '#2a9d8f', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                      +{d.linesAdded} −{d.linesRemoved}
+                    </span>
+
+                    {violations.map(v => <SafetyPill key={v.rule} v={v} />)}
+
+                    <button onClick={() => toggleExpand(d.id)}
+                      style={{ padding: '3px 10px', borderRadius: 999, border: '1px solid rgba(23,42,58,0.15)', background: '#fff', cursor: 'pointer', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
+                      {isExpanded ? 'Hide' : 'Diff'}
                     </button>
+
                     <button
-                      onClick={() => approve(d.diff.id)}
+                      onClick={() => approve(d.id)}
                       disabled={isBlocked || isActing}
-                      style={{
-                        padding: '4px 14px', borderRadius: 999, border: 'none', cursor: isBlocked ? 'not-allowed' : 'pointer',
-                        background: isBlocked ? '#eee' : '#2a9d8f', color: isBlocked ? '#aaa' : '#fff', fontSize: '0.78rem', fontWeight: 600,
-                      }}
-                    >
+                      style={{ padding: '3px 12px', borderRadius: 999, border: 'none', cursor: isBlocked ? 'not-allowed' : 'pointer', background: isBlocked ? '#eee' : '#2a9d8f', color: isBlocked ? '#aaa' : '#fff', fontSize: '0.72rem', fontWeight: 600, whiteSpace: 'nowrap' }}>
                       {isActing ? '…' : 'Approve'}
                     </button>
+
                     <button
-                      onClick={() => reject(d.diff.id)}
+                      onClick={() => reject(d.id)}
                       disabled={isActing}
-                      style={{ padding: '4px 14px', borderRadius: 999, border: 'none', cursor: 'pointer', background: '#f8e8e6', color: '#e76f51', fontSize: '0.78rem', fontWeight: 600 }}
-                    >
+                      style={{ padding: '3px 12px', borderRadius: 999, border: 'none', cursor: 'pointer', background: '#f8e8e6', color: '#e76f51', fontSize: '0.72rem', fontWeight: 600, whiteSpace: 'nowrap' }}>
                       Reject
                     </button>
                   </div>
 
-                  {/* Blocked banner */}
                   {isBlocked && (
-                    <div style={{ margin: '0 16px 10px', padding: '8px 14px', borderRadius: 10, background: '#fff0ed', color: '#e76f51', fontSize: '0.8rem' }}>
-                      🚫 Blocked by safety rule — change project safety settings to approve.
+                    <div style={{ margin: '0 14px 10px', padding: '7px 12px', borderRadius: 8, background: '#fff0ed', color: '#e76f51', fontSize: '0.78rem' }}>
+                      🚫 Blocked — update project safety rules to allow this change.
                     </div>
                   )}
 
-                  {/* Unified diff */}
-                  {isExpanded && (
-                    <div style={{ padding: '0 16px 16px' }}>
-                      <DiffHunk unified={d.diff.unifiedDiff} />
+                  {isExpanded && d.unifiedDiff && (
+                    <div style={{ padding: '0 14px 14px' }}>
+                      <DiffViewer unified={d.unifiedDiff} />
+                    </div>
+                  )}
+
+                  {isExpanded && !d.unifiedDiff && (
+                    <div style={{ padding: '0 14px 14px', color: '#888', fontSize: '0.78rem' }}>
+                      No unified diff available for this change.
                     </div>
                   )}
                 </div>
