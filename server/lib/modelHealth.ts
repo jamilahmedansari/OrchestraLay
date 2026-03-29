@@ -1,51 +1,73 @@
+// modelHealth.ts — in-memory circuit breaker per model
+// Tracks recent failures. If failures exceed threshold in the window, model is unhealthy.
+
 import type { ModelId } from './modelRegistry.js'
 
-interface CircuitState {
-  failures: number
-  lastFailure: number
-  isOpen: boolean
+const FAILURE_THRESHOLD = 3      // failures before circuit opens
+const WINDOW_MS = 60_000 * 5    // 5-minute rolling window
+const RECOVERY_MS = 60_000 * 2  // 2 minutes before retrying a tripped model
+
+type FailureRecord = {
+  timestamps: number[]
+  trippedAt: number | null
 }
 
-const FAILURE_THRESHOLD = 3
-const COOLDOWN_MS = 60_000
+const state = new Map<ModelId, FailureRecord>()
 
-/** In-memory circuit breaker state — resets on restart */
-const circuits = new Map<ModelId, CircuitState>()
-
-function getCircuit(modelId: ModelId): CircuitState {
-  let state = circuits.get(modelId)
-  if (!state) {
-    state = { failures: 0, lastFailure: 0, isOpen: false }
-    circuits.set(modelId, state)
+function getRecord(modelId: ModelId): FailureRecord {
+  if (!state.has(modelId)) {
+    state.set(modelId, { timestamps: [], trippedAt: null })
   }
-  return state
-}
-
-export function recordSuccess(modelId: ModelId, _latencyMs: number): void {
-  const state = getCircuit(modelId)
-  state.failures = 0
-  state.isOpen = false
+  return state.get(modelId)!
 }
 
 export function recordFailure(modelId: ModelId): void {
-  const state = getCircuit(modelId)
-  state.failures++
-  state.lastFailure = Date.now()
-  if (state.failures >= FAILURE_THRESHOLD) {
-    state.isOpen = true
+  const record = getRecord(modelId)
+  const now = Date.now()
+
+  // Prune old failures outside the window
+  record.timestamps = record.timestamps.filter((t) => now - t < WINDOW_MS)
+  record.timestamps.push(now)
+
+  if (record.timestamps.length >= FAILURE_THRESHOLD) {
+    record.trippedAt = now
   }
 }
 
-export function isModelAvailable(modelId: ModelId): boolean {
-  const state = getCircuit(modelId)
-  if (!state.isOpen) return true
+export function recordSuccess(modelId: ModelId): void {
+  const record = getRecord(modelId)
+  record.timestamps = []
+  record.trippedAt = null
+}
 
-  // Check if cooldown has elapsed — auto-close circuit
-  if (Date.now() - state.lastFailure > COOLDOWN_MS) {
-    state.isOpen = false
-    state.failures = 0
-    return true
+export function isHealthy(modelId: ModelId): boolean {
+  const record = getRecord(modelId)
+  const now = Date.now()
+
+  if (record.trippedAt !== null) {
+    // Allow recovery after RECOVERY_MS
+    if (now - record.trippedAt > RECOVERY_MS) {
+      record.trippedAt = null
+      record.timestamps = []
+      return true
+    }
+    return false
   }
 
-  return false
+  // Prune old failures
+  record.timestamps = record.timestamps.filter((t) => now - t < WINDOW_MS)
+  return record.timestamps.length < FAILURE_THRESHOLD
+}
+
+export function getHealthStatus(): Record<ModelId, { healthy: boolean; recentFailures: number }> {
+  const result: Record<string, { healthy: boolean; recentFailures: number }> = {}
+  for (const [modelId, record] of state.entries()) {
+    const now = Date.now()
+    const recent = record.timestamps.filter((t) => now - t < WINDOW_MS)
+    result[modelId] = {
+      healthy: isHealthy(modelId),
+      recentFailures: recent.length,
+    }
+  }
+  return result as Record<ModelId, { healthy: boolean; recentFailures: number }>
 }

@@ -1,206 +1,364 @@
 #!/usr/bin/env node
-import { Command } from 'commander'
+
+/**
+ * OrchestraLay CLI
+ *
+ * Commands:
+ *   submit  --prompt <text> --type <task_type> [--model <id>] [--budget <cents>]
+ *   status  --task-id <uuid>
+ *   apply   --task-id <uuid> [--dry-run] [--revert]
+ *
+ * Environment:
+ *   ORCHESTRALAY_API_KEY   olay_... key (required)
+ *   ORCHESTRALAY_API_URL   default http://localhost:3001
+ */
+
 import { createTRPCClient, httpBatchLink } from '@trpc/client'
 import superjson from 'superjson'
-import fs from 'fs/promises'
-import path from 'path'
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 import type { AppRouter } from '../server/routers/index.js'
 
-const API_URL = process.env.ORCHESTRALAY_API_URL ?? 'http://localhost:3001/trpc'
-const API_KEY = process.env.ORCHESTRALAY_API_KEY
+// ─── Config ──────────────────────────────────────────────────────────────────
 
-function getClient() {
-  if (!API_KEY) {
-    console.error('Error: ORCHESTRALAY_API_KEY environment variable is required')
+const API_URL  = process.env.ORCHESTRALAY_API_URL ?? 'http://localhost:3001'
+const API_KEY  = process.env.ORCHESTRALAY_API_KEY ?? ''
+const POLL_MS  = 2000
+
+if (!API_KEY) {
+  stderr('Error: ORCHESTRALAY_API_KEY is not set.')
+  stderr('  export ORCHESTRALAY_API_KEY=olay_...')
+  process.exit(1)
+}
+
+const client = createTRPCClient<AppRouter>({
+  links: [
+    httpBatchLink({
+      url: `${API_URL}/trpc`,
+      transformer: superjson,
+      headers: { Authorization: `Bearer ${API_KEY}` },
+    }),
+  ],
+})
+
+// ─── Output helpers ───────────────────────────────────────────────────────────
+
+function stderr(...args: unknown[]) { process.stderr.write(args.join(' ') + '\n') }
+function stdout(obj: unknown)        { process.stdout.write(JSON.stringify(obj, null, 2) + '\n') }
+function clearLine()                 { process.stderr.write('\r\x1b[K') }
+
+function formatCost(cents: number | null | undefined): string {
+  if (cents == null) return '—'
+  return `$${(cents / 100).toFixed(4)}`
+}
+
+// ─── Arg parser ───────────────────────────────────────────────────────────────
+
+function parseArgs(argv: string[]): Record<string, string | boolean> {
+  const flags: Record<string, string | boolean> = {}
+  let i = 0
+  while (i < argv.length) {
+    const arg = argv[i]
+    if (arg.startsWith('--')) {
+      const key = arg.slice(2)
+      const next = argv[i + 1]
+      if (next !== undefined && !next.startsWith('--')) {
+        flags[key] = next
+        i += 2
+      } else {
+        flags[key] = true
+        i++
+      }
+    } else {
+      i++
+    }
+  }
+  return flags
+}
+
+function strFlag(flags: Record<string, string | boolean>, key: string): string | undefined {
+  const v = flags[key]
+  return typeof v === 'string' ? v : undefined
+}
+
+function boolFlag(flags: Record<string, string | boolean>, key: string): boolean {
+  return flags[key] === true
+}
+
+// ─── TASK TYPES ───────────────────────────────────────────────────────────────
+
+const TASK_TYPES = ['code_generation', 'debugging', 'refactoring', 'analysis', 'review'] as const
+type TaskType = typeof TASK_TYPES[number]
+
+function assertTaskType(s: string): TaskType {
+  if (!TASK_TYPES.includes(s as TaskType)) {
+    stderr(`Error: --type must be one of: ${TASK_TYPES.join(', ')}`)
+    process.exit(1)
+  }
+  return s as TaskType
+}
+
+// ─── submit ───────────────────────────────────────────────────────────────────
+
+async function cmdSubmit(flags: Record<string, string | boolean>) {
+  const prompt     = strFlag(flags, 'prompt')
+  const typeRaw    = strFlag(flags, 'type')
+  const model      = strFlag(flags, 'model')
+  const budgetStr  = strFlag(flags, 'budget')
+
+  if (!prompt)  { stderr('Error: --prompt is required'); process.exit(1) }
+  if (!typeRaw) { stderr('Error: --type is required');   process.exit(1) }
+
+  const taskType      = assertTaskType(typeRaw)
+  const budgetCents   = budgetStr ? parseInt(budgetStr, 10) : undefined
+
+  stderr(`Submitting ${taskType} task…`)
+
+  let taskId: string
+  try {
+    const res = await client.tasks.submit.mutate({
+      prompt,
+      taskType,
+      preferredModel: model,
+      budgetCapCents: budgetCents,
+    })
+    taskId = res.taskId
+    stderr(`✓ Submitted — task ID: ${taskId}`)
+  } catch (e: unknown) {
+    stderr('Error submitting:', e instanceof Error ? e.message : String(e))
     process.exit(1)
   }
 
-  return createTRPCClient<AppRouter>({
-    links: [
-      httpBatchLink({
-        url: API_URL,
-        transformer: superjson,
-        headers: { Authorization: `Bearer ${API_KEY}` },
-      }),
-    ],
-  })
+  // Poll until terminal state
+  const terminal = new Set(['completed', 'failed', 'cancelled'])
+  let tick = 0
+  const spinner = ['-', '\\', '|', '/']
+
+  while (true) {
+    await new Promise(r => setTimeout(r, POLL_MS))
+    try {
+      const task = await client.tasks.get.query({ taskId })
+      const s    = spinner[tick % 4]
+      tick++
+      const modelStr = task.modelId ? ` [${task.modelId}]` : ''
+      clearLine()
+      process.stderr.write(`${s} ${task.status}${modelStr}`)
+
+      if (terminal.has(task.status)) {
+        clearLine()
+        if (task.status === 'completed') {
+          stderr(`✅  completed   model=${task.modelId ?? '—'}   cost=${formatCost(task.totalCostCents)}`)
+          stdout({ taskId, status: 'completed', modelId: task.modelId, costCents: task.totalCostCents })
+          process.exit(0)
+        } else {
+          stderr(`❌  ${task.status}   ${task.errorMessage ?? ''}`)
+          stdout({ taskId, status: task.status, error: task.errorMessage })
+          process.exit(1)
+        }
+      }
+    } catch (e: unknown) {
+      clearLine()
+      stderr('Poll error:', e instanceof Error ? e.message : String(e))
+    }
+  }
 }
 
-const program = new Command()
-  .name('orchestralay')
-  .description('OrchestraLay CLI — submit AI tasks, check status, apply diffs')
-  .version('0.1.0')
+// ─── status ───────────────────────────────────────────────────────────────────
 
-// ── submit ────────────────────────────────────────────────────────
+async function cmdStatus(flags: Record<string, string | boolean>) {
+  const taskId = strFlag(flags, 'task-id')
+  if (!taskId) { stderr('Error: --task-id is required'); process.exit(1) }
 
-program
-  .command('submit')
-  .description('Submit a task and poll until completion')
-  .requiredOption('--prompt <prompt>', 'The task prompt')
-  .requiredOption('--type <type>', 'Task type: code_generation, debugging, refactoring, analysis, review')
-  .option('--model <model>', 'Preferred model')
-  .option('--budget <cents>', 'Max cost in cents', parseInt)
-  .option('--timeout <seconds>', 'Timeout in seconds', parseInt)
-  .action(async (opts) => {
-    const client = getClient()
+  try {
+    const task = await client.tasks.get.query({ taskId })
 
-    console.log('Submitting task...')
-    const result = await client.tasks.submit.mutate({
-      prompt: opts.prompt,
-      taskType: opts.type,
-      preferredModels: opts.model ? [opts.model] : undefined,
-      budgetCents: opts.budget,
-      timeoutSeconds: opts.timeout,
-    })
+    stderr(`Task ID    : ${task.id}`)
+    stderr(`Status     : ${task.status}`)
+    stderr(`Type       : ${task.taskType}`)
+    stderr(`Model      : ${task.modelId ?? '—'}`)
+    stderr(`Cost       : ${formatCost(task.totalCostCents)}`)
+    stderr(`Created    : ${new Date(task.createdAt).toLocaleString()}`)
+    if (task.completedAt) stderr(`Completed  : ${new Date(task.completedAt).toLocaleString()}`)
+    if (task.errorMessage) stderr(`Error      : ${task.errorMessage}`)
 
-    console.log(`Task ID: ${result.taskId}`)
-    console.log(`Realtime channel: ${result.realtimeChannel}`)
-    console.log('Polling for completion...\n')
-
-    // Poll every 2s
-    while (true) {
-      await new Promise((r) => setTimeout(r, 2000))
-
-      const status = await client.tasks.getStatus.query({ taskId: result.taskId })
-
-      process.stdout.write(`\r  Status: ${status.status}`)
-
-      if (status.status === 'completed') {
-        console.log('\n')
-        console.log(`Model: ${status.selectedModel}`)
-        console.log(`Cost: $${((status.actualCostCents ?? 0) / 100).toFixed(4)}`)
-        console.log(`Diffs: ${status.diffCount}`)
-        console.log(`\nRun: orchestralay apply --task-id ${result.taskId}`)
-        break
-      }
-
-      if (status.status === 'failed' || status.status === 'cancelled') {
-        console.log('\n')
-        console.error(`Task ${status.status}`)
-        if (status.metadata && typeof status.metadata === 'object' && 'error' in status.metadata) {
-          console.error(`Error: ${(status.metadata as { error: string }).error}`)
-        }
-        process.exit(1)
-      }
-    }
-  })
-
-// ── status ────────────────────────────────────────────────────────
-
-program
-  .command('status')
-  .description('Check task status')
-  .requiredOption('--task-id <taskId>', 'Task ID')
-  .action(async (opts) => {
-    const client = getClient()
-    const status = await client.tasks.getStatus.query({ taskId: opts.taskId })
-
-    console.log(`Task:   ${status.id}`)
-    console.log(`Status: ${status.status}`)
-    console.log(`Type:   ${status.taskType}`)
-    console.log(`Model:  ${status.selectedModel ?? 'pending'}`)
-    console.log(`Cost:   $${((status.actualCostCents ?? 0) / 100).toFixed(4)}`)
-    console.log(`Diffs:  ${status.diffCount}`)
-
-    if (status.metadata && typeof status.metadata === 'object' && 'reasoning' in status.metadata) {
-      console.log('\nRouting reasoning:')
-      for (const r of (status.metadata as { reasoning: string[] }).reasoning) {
-        console.log(`  ${r}`)
-      }
-    }
-  })
-
-// ── apply ─────────────────────────────────────────────────────────
-
-program
-  .command('apply')
-  .description('Apply approved diffs to disk')
-  .requiredOption('--task-id <taskId>', 'Task ID')
-  .option('--dry-run', 'Print changes without writing')
-  .option('--revert', 'Revert applied diffs')
-  .action(async (opts) => {
-    const client = getClient()
-
-    if (opts.revert) {
-      // Fetch applied diffs and revert
-      const taskDiffs = await client.diffs.getForTask.query({ taskId: opts.taskId })
-      const appliedDiffs = taskDiffs.filter((d) => d.status === 'applied')
-
-      if (appliedDiffs.length === 0) {
-        console.log('No applied diffs to revert.')
-        return
-      }
-
-      for (const diff of appliedDiffs) {
-        const content = await client.diffs.getContent.query({ diffId: diff.id })
-
-        if (content.beforeContent !== null) {
-          const filePath = path.resolve(content.filePath)
-          if (opts.dryRun) {
-            console.log(`[dry-run] Would restore: ${filePath}`)
-          } else {
-            await fs.mkdir(path.dirname(filePath), { recursive: true })
-            await fs.writeFile(filePath, content.beforeContent, 'utf-8')
-            console.log(`Restored: ${filePath}`)
-          }
-        } else if (content.operation === 'create') {
-          const filePath = path.resolve(content.filePath)
-          if (opts.dryRun) {
-            console.log(`[dry-run] Would delete: ${filePath}`)
-          } else {
-            await fs.unlink(filePath).catch(() => {})
-            console.log(`Deleted: ${filePath}`)
-          }
-        }
-
-        await client.diffs.revert.mutate({ diffId: diff.id })
-      }
-
-      console.log(`\nReverted ${appliedDiffs.length} diffs.`)
-      return
+    const reasoning = (task.routingReasoning as string[] | null)
+    if (reasoning && reasoning.length > 0) {
+      stderr('\nRouting decisions:')
+      for (const line of reasoning) stderr(`  · ${line}`)
     }
 
-    // Normal apply — fetch approved diffs
-    const taskDiffs = await client.diffs.getForTask.query({ taskId: opts.taskId })
-    const approvedDiffs = taskDiffs.filter((d) => d.status === 'approved')
+    stdout(task)
+  } catch (e: unknown) {
+    stderr('Error:', e instanceof Error ? e.message : String(e))
+    process.exit(1)
+  }
+}
 
-    if (approvedDiffs.length === 0) {
-      console.log('No approved diffs to apply. Approve them in the dashboard first.')
-      return
-    }
+// ─── apply ────────────────────────────────────────────────────────────────────
 
-    const appliedIds: string[] = []
+async function cmdApply(flags: Record<string, string | boolean>) {
+  const taskId = strFlag(flags, 'task-id')
+  const dryRun = boolFlag(flags, 'dry-run')
+  const revert = boolFlag(flags, 'revert')
 
-    for (const diff of approvedDiffs) {
-      const content = await client.diffs.getContent.query({ diffId: diff.id })
-      const filePath = path.resolve(content.filePath)
+  if (!taskId) { stderr('Error: --task-id is required'); process.exit(1) }
 
-      if (content.operation === 'delete') {
-        if (opts.dryRun) {
-          console.log(`[dry-run] Would delete: ${filePath}`)
+  type DiffRow = {
+    id: string
+    filePath: string
+    operation: string
+    status: string
+    unifiedDiff: string | null
+    beforeContent: string | null
+    afterContent: string | null
+  }
+
+  let allDiffs: DiffRow[]
+  try {
+    allDiffs = await client.diffs.forTask.query({ taskId }) as DiffRow[]
+  } catch (e: unknown) {
+    stderr('Error fetching diffs:', e instanceof Error ? e.message : String(e))
+    process.exit(1)
+  }
+
+  // ── REVERT ──────────────────────────────────────────────────
+  if (revert) {
+    const applied = allDiffs.filter(d => d.status === 'applied')
+    if (applied.length === 0) { stderr('No applied diffs to revert.'); process.exit(0) }
+    stderr(`${dryRun ? '[dry-run] ' : ''}Reverting ${applied.length} diff(s)…`)
+
+    for (const d of applied) {
+      if (dryRun) { stderr(`  [dry-run] ↩  ${d.filePath}`); continue }
+      try {
+        if (d.operation === 'create') {
+          // File was created — delete it on revert
+          await fs.unlink(path.resolve(d.filePath)).catch(() => {/* already gone */})
+          stderr(`  ↩  deleted ${d.filePath}`)
+        } else if (d.beforeContent) {
+          // Restore original content
+          await fs.mkdir(path.dirname(path.resolve(d.filePath)), { recursive: true })
+          await fs.writeFile(path.resolve(d.filePath), d.beforeContent, 'utf-8')
+          stderr(`  ↩  restored ${d.filePath}`)
         } else {
-          await fs.unlink(filePath).catch(() => {})
-          console.log(`Deleted: ${filePath}`)
+          stderr(`  ⚠️  no before_content for ${d.filePath} — skipping (use git to restore)`)
+          continue
         }
+        await client.diffs.markReverted.mutate({ diffId: d.id })
+      } catch (e: unknown) {
+        stderr(`  ❌  ${d.filePath}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+
+    if (!dryRun) stderr(`✅  Reverted ${applied.length} diff(s)`)
+    stdout({ taskId, reverted: applied.length, dryRun })
+    process.exit(0)
+  }
+
+  // ── APPLY ───────────────────────────────────────────────────
+  const approved = allDiffs.filter(d => d.status === 'approved')
+  const pending  = allDiffs.filter(d => d.status === 'pending')
+  const blocked  = allDiffs.filter(d => d.status === 'blocked')
+
+  if (blocked.length)  stderr(`⚠️   ${blocked.length} diff(s) blocked by safety rules — skipped`)
+  if (pending.length)  stderr(`ℹ️   ${pending.length} diff(s) still pending approval — approve in dashboard first`)
+  if (!approved.length){ stderr('No approved diffs to apply.'); process.exit(0) }
+
+  stderr(`${dryRun ? '[dry-run] ' : ''}Applying ${approved.length} diff(s)…`)
+
+  const appliedIds: string[] = []
+
+  for (const d of approved) {
+    if (dryRun) {
+      stderr(`  [dry-run] ${d.operation.toUpperCase().padEnd(6)} ${d.filePath}`)
+      continue
+    }
+    try {
+      if (d.operation === 'delete') {
+        await fs.unlink(path.resolve(d.filePath))
+        stderr(`  🗑   deleted  ${d.filePath}`)
       } else {
-        if (opts.dryRun) {
-          console.log(`[dry-run] Would write: ${filePath} (+${diff.linesAdded} -${diff.linesRemoved})`)
-        } else {
-          await fs.mkdir(path.dirname(filePath), { recursive: true })
-          await fs.writeFile(filePath, content.afterContent ?? '', 'utf-8')
-          console.log(`Written: ${filePath} (+${diff.linesAdded} -${diff.linesRemoved})`)
+        // Prefer afterContent from DB; fall back to reconstructing from unified diff
+        let content = d.afterContent ?? ''
+        if (!content && d.unifiedDiff) {
+          content = d.unifiedDiff
+            .split('\n')
+            .filter(l => l.startsWith('+') && !l.startsWith('+++'))
+            .map(l => l.slice(1))
+            .join('\n')
         }
+        await fs.mkdir(path.dirname(path.resolve(d.filePath)), { recursive: true })
+        await fs.writeFile(path.resolve(d.filePath), content, 'utf-8')
+        stderr(`  ✏️   ${d.operation === 'create' ? 'created ' : 'modified'} ${d.filePath}`)
       }
-
-      if (!opts.dryRun) appliedIds.push(diff.id)
+      appliedIds.push(d.id)
+    } catch (e: unknown) {
+      stderr(`  ❌  ${d.filePath}: ${e instanceof Error ? e.message : String(e)}`)
     }
+  }
 
-    // Mark applied in DB
-    if (appliedIds.length > 0) {
-      await client.diffs.markApplied.mutate({ diffIds: appliedIds })
+  // Mark applied in DB
+  if (!dryRun && appliedIds.length > 0) {
+    for (const diffId of appliedIds) {
+      await client.diffs.markApplied.mutate({ diffId }).catch(() => {/* non-fatal */})
     }
+    stderr(`✅  Applied ${appliedIds.length} diff(s)`)
+  }
 
-    console.log(`\n${opts.dryRun ? '[dry-run] ' : ''}Applied ${approvedDiffs.length} diffs.`)
-  })
+  stdout({ taskId, applied: appliedIds.length, skipped: approved.length - appliedIds.length, dryRun })
+  process.exit(0)
+}
 
-program.parse()
+// ─── Usage ────────────────────────────────────────────────────────────────────
+
+const USAGE = `
+orchestralay <command> [options]
+
+Commands:
+  submit    Submit a task and poll until complete
+  status    Check task status
+  apply     Write approved diffs to disk (or revert them)
+
+submit options:
+  --prompt <text>     Task description (required)
+  --type <type>       code_generation | debugging | refactoring | analysis | review  (required)
+  --model <id>        Preferred model  e.g. claude-3-5-sonnet  (optional)
+  --budget <cents>    Max cost cap in cents  e.g. 50 = $0.50  (optional)
+
+status options:
+  --task-id <uuid>    Task ID returned by submit (required)
+
+apply options:
+  --task-id <uuid>    Task ID (required)
+  --dry-run           Preview without writing files
+  --revert            Undo previously applied diffs
+
+Environment:
+  ORCHESTRALAY_API_KEY    Your API key — olay_...  (required)
+  ORCHESTRALAY_API_URL    Server URL  (default: http://localhost:3001)
+
+Examples:
+  orchestralay submit --prompt "Add retry logic to fetchUser" --type refactoring
+  orchestralay status --task-id 018e...
+  orchestralay apply  --task-id 018e...
+  orchestralay apply  --task-id 018e... --dry-run
+  orchestralay apply  --task-id 018e... --revert
+`.trim()
+
+// ─── Router ───────────────────────────────────────────────────────────────────
+
+const [,, command, ...rest] = process.argv
+const flags = parseArgs(rest)
+
+if (!command || command === '--help' || command === '-h') {
+  stderr(USAGE); process.exit(0)
+}
+
+switch (command) {
+  case 'submit': cmdSubmit(flags).catch(e => { stderr(String(e)); process.exit(1) }); break
+  case 'status': cmdStatus(flags).catch(e => { stderr(String(e)); process.exit(1) }); break
+  case 'apply':  cmdApply(flags).catch(e  => { stderr(String(e)); process.exit(1) }); break
+  default:
+    stderr(`Unknown command: ${command}\n`)
+    stderr(USAGE)
+    process.exit(1)
+}

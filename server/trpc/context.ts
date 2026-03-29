@@ -1,11 +1,13 @@
-import type { Request } from 'express'
+import type { Request, Response } from 'express'
+
+import type { CreateExpressContextOptions } from '@trpc/server/adapters/express'
+import { TRPCError } from '@trpc/server'
+import { and, eq, gt, isNull, or } from 'drizzle-orm'
+
 import { db } from '../db/index.js'
-import { apiKeys, teamMembers, projects } from '../db/schema.js'
-import { eq, and, isNull, gt } from 'drizzle-orm'
+import { apiKeys, projects, teamMembers } from '../db/schema.js'
 import { hashApiKey } from '../lib/hashKey.js'
 import { supabaseAnon } from '../lib/supabase.js'
-
-// ─── Auth context union type ─────────────────────────────────────────
 
 export type DashboardAuth = {
   type: 'dashboard'
@@ -22,107 +24,111 @@ export type ApiKeyAuth = {
   keyId: string
 }
 
-export type NoAuth = { type: 'none' }
+export type AuthContext = DashboardAuth | ApiKeyAuth | { type: 'none' }
 
-export type AuthContext = DashboardAuth | ApiKeyAuth | NoAuth
-
-export type Context = {
-  auth: AuthContext
+export type TrpcContext = {
   req: Request
+  res: Response
+  auth: AuthContext
 }
 
-// ─── Resolve JWT (Bug 1 fix: takes req explicitly) ──────────────────
+function getBearerToken(req: Request): string | null {
+  const header = req.headers.authorization
+  if (!header || !header.startsWith('Bearer ')) {
+    return null
+  }
 
-async function resolveJwt(token: string, req: Request): Promise<AuthContext> {
+  return header.slice('Bearer '.length).trim()
+}
+
+async function resolveJwt(token: string, req: Request): Promise<DashboardAuth | { type: 'none' }> {
   const { data, error } = await supabaseAnon.auth.getUser(token)
-  if (error || !data.user) return { type: 'none' }
 
-  const supabaseUserId = data.user.id
+  if (error || !data.user) {
+    return { type: 'none' }
+  }
 
-  // Read teamId from query for multi-team users
-  const teamIdParam = req.query.teamId as string | undefined
-
-  // Find user's team membership
+  const requestedTeamId = typeof req.query.teamId === 'string' ? req.query.teamId : undefined
   const memberships = await db
-    .select()
+    .select({
+      teamId: teamMembers.teamId,
+      role: teamMembers.role,
+    })
     .from(teamMembers)
-    .where(eq(teamMembers.userId, supabaseUserId))
+    .where(
+      requestedTeamId
+        ? and(eq(teamMembers.userId, data.user.id), eq(teamMembers.teamId, requestedTeamId))
+        : eq(teamMembers.userId, data.user.id),
+    )
+    .limit(1)
 
-  if (memberships.length === 0) return { type: 'none' }
+  const membership = memberships[0]
 
-  // Use requested teamId or default to first membership
-  const membership = teamIdParam
-    ? memberships.find((m) => m.teamId === teamIdParam)
-    : memberships[0]
-
-  if (!membership) return { type: 'none' }
+  if (!membership) {
+    return { type: 'none' }
+  }
 
   return {
     type: 'dashboard',
-    userId: supabaseUserId,
+    userId: data.user.id,
     teamId: membership.teamId,
     role: membership.role,
   }
 }
 
-// ─── Resolve API key ────────────────────────────────────────────────
-
-async function resolveApiKey(token: string): Promise<AuthContext> {
-  const hash = hashApiKey(token)
-
-  const [key] = await db
+async function resolveApiKey(token: string): Promise<ApiKeyAuth | { type: 'none' }> {
+  const keyHash = hashApiKey(token)
+  const now = new Date()
+  const rows = await db
     .select({
-      id: apiKeys.id,
+      keyId: apiKeys.id,
       projectId: apiKeys.projectId,
-      teamId: apiKeys.teamId,
+      teamId: projects.teamId,
       scopes: apiKeys.scopes,
-      lastUsedAt: apiKeys.lastUsedAt,
     })
     .from(apiKeys)
+    .innerJoin(projects, eq(projects.id, apiKeys.projectId))
     .where(
       and(
-        eq(apiKeys.keyHash, hash),
-        eq(apiKeys.revoked, false)
-      )
+        eq(apiKeys.keyHash, keyHash),
+        eq(apiKeys.revoked, false),
+        or(isNull(apiKeys.expiresAt), gt(apiKeys.expiresAt, now)),
+      ),
     )
     .limit(1)
 
-  if (!key) return { type: 'none' }
+  const match = rows[0]
 
-  // Fire-and-forget: update lastUsedAt
+  if (!match) {
+    return { type: 'none' }
+  }
+
   db.update(apiKeys)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(apiKeys.id, key.id))
+    .set({ lastUsedAt: now })
+    .where(eq(apiKeys.id, match.keyId))
     .execute()
     .catch(() => {})
 
   return {
     type: 'apikey',
-    projectId: key.projectId,
-    teamId: key.teamId,
-    scopes: key.scopes,
-    keyId: key.id,
+    projectId: match.projectId,
+    teamId: match.teamId,
+    scopes: match.scopes,
+    keyId: match.keyId,
   }
 }
 
-// ─── Main auth resolver ─────────────────────────────────────────────
-
 export async function resolveAuth(req: Request): Promise<AuthContext> {
-  const authHeader = req.headers.authorization
-  if (!authHeader) return { type: 'none' }
+  const token = getBearerToken(req)
 
-  const token = authHeader.startsWith('Bearer ')
-    ? authHeader.slice(7)
-    : authHeader
+  if (!token) {
+    return { type: 'none' }
+  }
 
-  if (!token) return { type: 'none' }
-
-  // JWT tokens start with eyJ
   if (token.startsWith('eyJ')) {
     return resolveJwt(token, req)
   }
 
-  // API keys start with olay_
   if (token.startsWith('olay_')) {
     return resolveApiKey(token)
   }
@@ -130,9 +136,18 @@ export async function resolveAuth(req: Request): Promise<AuthContext> {
   return { type: 'none' }
 }
 
-// ─── Context factory for tRPC ────────────────────────────────────────
-
-export async function createContext({ req }: { req: Request }): Promise<Context> {
+export async function createContext({ req, res }: CreateExpressContextOptions): Promise<TrpcContext> {
   const auth = await resolveAuth(req)
-  return { auth, req }
+
+  return {
+    req,
+    res,
+    auth,
+  }
+}
+
+export function requireAuth(auth: AuthContext): asserts auth is DashboardAuth | ApiKeyAuth {
+  if (auth.type === 'none') {
+    throw new TRPCError({ code: 'UNAUTHORIZED' })
+  }
 }

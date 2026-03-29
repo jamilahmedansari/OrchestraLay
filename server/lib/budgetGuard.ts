@@ -1,43 +1,36 @@
-import { TRPCError } from '@trpc/server'
-import { db } from '../db/index.js'
-import { teams, projects } from '../db/schema.js'
-import { eq } from 'drizzle-orm'
+// budgetGuard.ts — pre-flight spend enforcement
 
-/**
- * Pre-flight spend enforcement. Checks team monthly cap + project cap.
- * Throws FORBIDDEN with human-readable message if exceeded.
- */
-export async function enforceBudget(projectId: string, teamId: string): Promise<void> {
-  const [team] = await db
+import { db } from '../db/index.js'
+import { eq, sql } from 'drizzle-orm'
+import { teams } from '../db/schema.js'
+import { TRPCError } from '@trpc/server'
+
+export async function assertBudget(teamId: string, estimatedCostCents: number): Promise<void> {
+  const rows = await db
     .select({
-      monthlyBudgetCents: teams.monthlyBudgetCents,
-      currentMonthSpendCents: teams.currentMonthSpendCents,
-      plan: teams.plan,
+      budget: teams.monthlyBudgetCents,
+      spent: teams.currentMonthSpendCents,
     })
     .from(teams)
     .where(eq(teams.id, teamId))
     .limit(1)
 
-  if (!team) {
-    throw new TRPCError({ code: 'NOT_FOUND', message: 'Team not found' })
-  }
+  const team = rows[0]
+  if (!team) throw new TRPCError({ code: 'NOT_FOUND', message: 'Team not found' })
+  if (team.budget === 0) return // unlimited
 
-  if (team.currentMonthSpendCents >= team.monthlyBudgetCents) {
+  const remaining = team.budget - team.spent
+  if (estimatedCostCents > remaining) {
     throw new TRPCError({
       code: 'FORBIDDEN',
-      message: `Team monthly budget exceeded: ${team.currentMonthSpendCents}¢ / ${team.monthlyBudgetCents}¢. Upgrade your plan or wait for the billing period to reset.`,
+      message: `Monthly budget exceeded. Remaining: ${remaining}¢, estimated cost: ${estimatedCostCents}¢`,
     })
   }
+}
 
-  // Check project-level budget if set
-  const [project] = await db
-    .select({ monthlyBudgetCents: projects.monthlyBudgetCents })
-    .from(projects)
-    .where(eq(projects.id, projectId))
-    .limit(1)
-
-  if (project?.monthlyBudgetCents) {
-    // Project budget check would require aggregating cost_logs for this project in current period
-    // For MVP, team-level budget is the primary gate
-  }
+export async function incrementSpend(teamId: string, costCents: number): Promise<void> {
+  // Atomic increment — raw SQL to avoid race conditions
+  await db.execute(
+    sql`UPDATE teams SET current_month_spend_cents = current_month_spend_cents + ${costCents} WHERE id = ${teamId}`,
+  )
 }

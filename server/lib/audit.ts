@@ -1,28 +1,42 @@
+// audit.ts — writeAuditLog() for all significant actions
+
 import { db } from '../db/index.js'
 import { auditLogs } from '../db/schema.js'
 
-export interface AuditEntry {
-  teamId?: string
-  userId?: string
-  action: string
-  resource: string
-  resourceId?: string
-  metadata?: Record<string, unknown>
-  ipAddress?: string
-}
+export type AuditAction =
+  | 'task.submitted'
+  | 'task.routing'
+  | 'task.executing'
+  | 'task.completed'
+  | 'task.failed'
+  | 'task.cancelled'
+  | 'diff.approved'
+  | 'diff.rejected'
+  | 'diff.applied'
+  | 'diff.reverted'
+  | 'apikey.created'
+  | 'apikey.revoked'
+  | 'budget.exceeded'
 
-/** Insert audit log entry. Always fire-and-forget — never await in hot path. */
-export function writeAuditLog(entry: AuditEntry): void {
-  db.insert(auditLogs)
-    .values({
-      teamId: entry.teamId ?? null,
-      userId: entry.userId ?? null,
-      action: entry.action,
-      resource: entry.resource,
-      resourceId: entry.resourceId ?? null,
-      metadata: entry.metadata ?? null,
-      ipAddress: entry.ipAddress ?? null,
+export async function writeAuditLog(params: {
+  teamId: string
+  actorId?: string
+  action: AuditAction
+  resourceType: string
+  resourceId: string
+  metadata?: Record<string, unknown>
+}): Promise<void> {
+  try {
+    await db.insert(auditLogs).values({
+      teamId: params.teamId,
+      actorId: params.actorId ?? null,
+      action: params.action,
+      resourceType: params.resourceType,
+      resourceId: params.resourceId,
+      metadata: params.metadata ?? {},
     })
-    .execute()
-    .catch(() => {})
+  } catch (err) {
+    // Audit log failure is non-fatal
+    console.error('[audit] failed to write audit log:', err)
+  }
 }

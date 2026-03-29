@@ -1,21 +1,23 @@
-import { initTRPC, TRPCError } from '@trpc/server'
+import { initTRPC } from '@trpc/server'
 import superjson from 'superjson'
-import type { Context } from './context.js'
 
-const t = initTRPC.context<Context>().create({
+import { env } from '../lib/env.js'
+import type { TrpcContext } from './context.js'
+
+const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
-  errorFormatter({ shape, error }) {
+  errorFormatter({ error, shape }) {
     return {
       ...shape,
       data: {
         ...shape.data,
-        // Strip stack traces in production
-        stack: process.env.NODE_ENV === 'production' ? undefined : error.stack,
+        stack: env.NODE_ENV === 'production' ? undefined : error.stack,
       },
     }
   },
 })
 
-export const router = t.router
+export const createTRPCRouter = t.router
+export const createCallerFactory = t.createCallerFactory
 export const middleware = t.middleware
 export const publicProcedure = t.procedure
