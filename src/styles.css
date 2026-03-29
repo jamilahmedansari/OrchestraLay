@@ -66,6 +66,10 @@ a {
   color: #f8f7f4;
 }
 
+.nav-link-active {
+  background: #2a9d8f;
+}
+
 .page-shell {
   margin-top: 24px;
   display: grid;
@@ -83,10 +87,31 @@ a {
   margin-top: 0;
 }
 
+.panel-stack {
+  display: grid;
+  gap: 24px;
+}
+
+.panel-header-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.muted-copy {
+  margin: 8px 0 0;
+  color: rgba(23, 42, 58, 0.72);
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 16px;
+}
+
+.metric-grid-wide {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
 .metric-card {
@@ -102,6 +127,204 @@ a {
   margin-top: 8px;
 }
 
+.table-shell,
+.budget-card,
+.chart-shell,
+.diff-card {
+  border-radius: 22px;
+  border: 1px solid rgba(23, 42, 58, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.table-shell,
+.budget-card,
+.diff-card {
+  padding: 20px;
+}
+
+.table-header {
+  margin-bottom: 16px;
+}
+
+.table-header h3,
+.budget-copy-row h3,
+.diff-card h3 {
+  margin: 0;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  padding: 14px 12px;
+  text-align: left;
+  border-top: 1px solid rgba(23, 42, 58, 0.08);
+  vertical-align: top;
+}
+
+.data-table thead th {
+  border-top: none;
+  color: rgba(23, 42, 58, 0.72);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.table-primary {
+  font-weight: 600;
+}
+
+.table-secondary {
+  margin-top: 6px;
+  color: rgba(23, 42, 58, 0.68);
+  text-transform: capitalize;
+}
+
+.status-pill,
+.operation-badge,
+.violation-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.status-submitted,
+.status-routing,
+.status-executing {
+  background: rgba(42, 157, 143, 0.14);
+  color: #1a5f56;
+}
+
+.status-completed {
+  background: rgba(77, 144, 120, 0.14);
+  color: #2b5d45;
+}
+
+.status-failed,
+.status-cancelled,
+.violation-block {
+  background: rgba(217, 93, 57, 0.14);
+  color: #8d3b23;
+}
+
+.operation-badge,
+.violation-warn {
+  background: rgba(237, 125, 58, 0.16);
+  color: #a25724;
+  margin-right: 10px;
+}
+
+.violation-safe {
+  background: rgba(42, 157, 143, 0.14);
+  color: #1a5f56;
+}
+
+.cost-summary-strip {
+  display: flex;
+  gap: 20px;
+}
+
+.cost-summary-strip span,
+.diff-stats span,
+.budget-copy-row strong {
+  display: block;
+  color: rgba(23, 42, 58, 0.7);
+}
+
+.cost-summary-strip strong,
+.budget-copy-row strong {
+  margin-top: 6px;
+  font-size: 1.5rem;
+  color: #172a3a;
+}
+
+.budget-copy-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.budget-bar {
+  margin-top: 18px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(23, 42, 58, 0.08);
+  overflow: hidden;
+}
+
+.budget-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2a9d8f, #ed7d3a);
+}
+
+.chart-shell {
+  min-height: 320px;
+  padding: 16px;
+}
+
+.action-button {
+  border: none;
+  border-radius: 999px;
+  padding: 12px 18px;
+  background: #172a3a;
+  color: #f8f7f4;
+  cursor: pointer;
+  font: inherit;
+}
+
+.action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.action-button-secondary {
+  background: rgba(23, 42, 58, 0.12);
+  color: #172a3a;
+}
+
+.warning-banner {
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: rgba(217, 93, 57, 0.12);
+  color: #8d3b23;
+  border: 1px solid rgba(217, 93, 57, 0.2);
+}
+
+.diff-list {
+  display: grid;
+  gap: 16px;
+}
+
+.diff-card-header,
+.diff-actions,
+.diff-stats,
+.violation-list {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.diff-card-header {
+  justify-content: space-between;
+}
+
+.diff-actions {
+  margin-top: 18px;
+}
+
+.violation-list {
+  margin-top: 16px;
+}
+
 @media (max-width: 720px) {
   .app-shell {
     padding: 16px;
@@ -110,5 +333,16 @@ a {
   .hero {
     padding: 20px;
     flex-direction: column;
+  }
+
+  .panel-header-row,
+  .budget-copy-row,
+  .diff-card-header {
+    flex-direction: column;
+  }
+
+  .data-table {
+    display: block;
+    overflow-x: auto;
   }
 }

@@ -3,28 +3,28 @@ import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { httpBatchLink } from '@trpc/client'
 import superjson from 'superjson'
-import { trpc } from './lib/trpc'
-import App from './App'
-import './index.css'
+import { getStoredAuthToken, resolveTrpcUrl, trpc } from './lib/trpc'
+import { App } from './App'
+import './styles.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { refetchOnWindowFocus: false, retry: 1 },
+    queries: {
+      refetchOnWindowFocus: false,
+      retry: 1,
+      staleTime: 10_000,
+    },
   },
 })
 
 const trpcClient = trpc.createClient({
+  transformer: superjson,
   links: [
     httpBatchLink({
-      url: '/trpc',
-      transformer: superjson,
+      url: resolveTrpcUrl(),
       headers() {
-        const token = localStorage.getItem('supabase_token')
-        const teamId = localStorage.getItem('team_id')
-        return {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(teamId ? {} : {}),
-        }
+        const token = getStoredAuthToken()
+        return token ? { Authorization: `Bearer ${token}` } : {}
       },
     }),
   ],

@@ -1,14 +1,7 @@
-import { useEffect } from 'react'
 import { trpc } from '../lib/trpc'
-import { supabase } from '../lib/supabase'
 
-const statusColors: Record<string, string> = {
-  submitted: 'bg-gray-100 text-gray-700',
-  routing: 'bg-blue-100 text-blue-700',
-  executing: 'bg-yellow-100 text-yellow-700',
-  completed: 'bg-green-100 text-green-700',
-  failed: 'bg-red-100 text-red-700',
-  cancelled: 'bg-gray-100 text-gray-500',
+function formatMoney(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`
 }
 
 function timeAgo(date: Date | string): string {
@@ -19,133 +12,94 @@ function timeAgo(date: Date | string): string {
   return `${Math.floor(seconds / 86400)}d ago`
 }
 
-export default function Overview() {
+function OverviewState({ message }: { message: string }) {
+  return (
+    <section className="panel">
+      <h2>Overview</h2>
+      <p>{message}</p>
+    </section>
+  )
+}
+
+export function Overview() {
   const overview = trpc.dashboard.getOverview.useQuery(undefined, {
     refetchInterval: 30_000,
   })
 
-  const { metrics, recentTasks } = overview.data ?? {
-    metrics: { tasksToday: 0, costTodayCents: 0, pendingDiffs: 0, failedToday: 0 },
-    recentTasks: [],
+  if (overview.isLoading) {
+    return <OverviewState message="Loading team activity and spend..." />
   }
 
-  // Realtime subscription for live updates
-  useEffect(() => {
-    const teamId = localStorage.getItem('team_id')
-    if (!teamId) return
+  if (overview.error || !overview.data) {
+    return (
+      <OverviewState message="Dashboard data is unavailable. Store a dashboard JWT in localStorage under orchestralay.auth.token to authenticate this view." />
+    )
+  }
 
-    const channel = supabase
-      .channel('tasks-realtime')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'tasks',
-        filter: `team_id=eq.${teamId}`,
-      }, () => {
-        overview.refetch()
-      })
-      .subscribe()
-
-    return () => { supabase.removeChannel(channel) }
-  }, [])
+  const { metrics, recentTasks, team } = overview.data
+  const cards = [
+    { label: 'Tasks Today', value: String(metrics.tasksToday) },
+    { label: 'Cost Today', value: formatMoney(metrics.costTodayCents) },
+    { label: 'Saved Today', value: formatMoney(metrics.directSavingsTodayCents) },
+    { label: 'Pending Diffs', value: String(metrics.pendingDiffs) },
+    { label: 'Failed Today', value: String(metrics.failedToday) },
+  ]
 
   return (
-    <div>
-      {/* 4 Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <MetricCard label="Tasks Today" value={metrics.tasksToday} />
-        <MetricCard
-          label="Cost Today"
-          value={`${(metrics.costTodayCents / 100).toFixed(2)}`}
-          prefix="$"
-        />
-        <MetricCard label="Pending Diffs" value={metrics.pendingDiffs} />
-        <MetricCard label="Failed Today" value={metrics.failedToday} variant="danger" />
+    <section className="panel panel-stack">
+      <div className="panel-header-row">
+        <div>
+          <h2>Overview</h2>
+          <p className="muted-copy">
+            Team plan {team?.plan ?? 'unknown'} with {formatMoney(team?.currentMonthSpendCents ?? 0)} spent this month.
+          </p>
+        </div>
       </div>
 
-      {/* Task Feed Table */}
-      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-200">
-          <h2 className="text-lg font-semibold">Live Task Feed</h2>
+      <div className="metric-grid metric-grid-wide">
+        {cards.map((card) => (
+          <article key={card.label} className="metric-card">
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+          </article>
+        ))}
+      </div>
+
+      <div className="table-shell">
+        <div className="table-header">
+          <h3>Live Task Feed</h3>
+          <p className="muted-copy">Recent routed work with measured spend and savings.</p>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Prompt</th>
+              <th>Status</th>
+              <th>Model</th>
+              <th>Spend</th>
+              <th>Saved</th>
+              <th>Age</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recentTasks.map((task) => (
               <tr>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">ID</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">Prompt</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">Model</th>
-                <th className="px-4 py-2 text-left font-medium text-gray-500">Status</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">Cost</th>
-                <th className="px-4 py-2 text-right font-medium text-gray-500">Age</th>
+                <td>
+                  <div className="table-primary">{task.prompt.slice(0, 84)}</div>
+                  <div className="table-secondary">{task.taskType.replace(/_/g, ' ')}</div>
+                </td>
+                <td>
+                  <span className={`status-pill status-${task.status}`}>{task.status}</span>
+                </td>
+                <td>{task.selectedModel ?? 'routing'}</td>
+                <td>{formatMoney(task.actualCostCents ?? 0)}</td>
+                <td>{formatMoney(task.metadata?.directSavingsCents ?? 0)}</td>
+                <td>{timeAgo(task.createdAt)}</td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {recentTasks.map((task) => (
-                <tr key={task.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-2 font-mono text-xs text-gray-500">
-                    {task.id.slice(0, 8)}
-                  </td>
-                  <td className="px-4 py-2 max-w-xs truncate">{task.prompt}</td>
-                  <td className="px-4 py-2 text-xs">
-                    {task.selectedModel ?? '—'}
-                  </td>
-                  <td className="px-4 py-2">
-                    <span
-                      className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                        statusColors[task.status] ?? 'bg-gray-100'
-                      }`}
-                    >
-                      {task.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-xs">
-                    {task.actualCostCents != null
-                      ? `$${(task.actualCostCents / 100).toFixed(4)}`
-                      : '—'}
-                  </td>
-                  <td className="px-4 py-2 text-right text-xs text-gray-500">
-                    {timeAgo(task.createdAt)}
-                  </td>
-                </tr>
-              ))}
-              {recentTasks.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
-                    No tasks yet. Submit one via CLI or API.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
       </div>
-    </div>
-  )
-}
-
-function MetricCard({
-  label,
-  value,
-  prefix,
-  variant,
-}: {
-  label: string
-  value: number | string
-  prefix?: string
-  variant?: 'danger'
-}) {
-  return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4">
-      <p className="text-sm text-gray-500">{label}</p>
-      <p
-        className={`text-2xl font-bold mt-1 ${
-          variant === 'danger' && Number(value) > 0 ? 'text-red-600' : 'text-gray-900'
-        }`}
-      >
-        {prefix}
-        {value}
-      </p>
-    </div>
+    </section>
   )
 }

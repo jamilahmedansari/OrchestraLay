@@ -1,5 +1,5 @@
 import { db } from '../db/index.js'
-import { tasks, modelResults, costLogs, teams } from '../db/schema.js'
+import { tasks, modelResults, costLogs } from '../db/schema.js'
 import { eq, sql } from 'drizzle-orm'
 import { getQueue } from '../lib/queue.js'
 import { estimateTokens } from '../lib/tokenizer.js'
@@ -13,16 +13,13 @@ import { emitEvent } from '../lib/eventEmitter.js'
 import { writeAuditLog } from '../lib/audit.js'
 
 const QUEUE_NAME = 'orchestrate-task'
+const WORKER_BATCH_SIZE = 5
+const WORKER_CONCURRENCY = 3
+let workerStarted = false
+let workerIds: string[] = []
 
 interface TaskPayload {
   taskId: string
-  projectId: string
-  teamId: string
-  prompt: string
-  taskType: TaskType
-  preferredModels?: string[]
-  budgetCents?: number
-  timeoutSeconds?: number
 }
 
 function billingPeriod(): string {
@@ -31,18 +28,22 @@ function billingPeriod(): string {
 }
 
 async function handleTask(job: { data: TaskPayload }): Promise<void> {
-  const {
-    taskId,
-    projectId,
-    teamId,
-    prompt,
-    taskType,
-    preferredModels,
-    budgetCents,
-    timeoutSeconds = 120,
-  } = job.data
+  const { taskId } = job.data
 
   try {
+    const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1)
+    if (!task) {
+      throw new Error(`Task ${taskId} not found`)
+    }
+
+    const projectId = task.projectId
+    const teamId = task.teamId
+    const prompt = task.prompt
+    const taskType = task.taskType as TaskType
+    const preferredModels = task.preferredModels ?? undefined
+    const budgetCents = task.budgetCents ?? undefined
+    const timeoutSeconds = task.timeoutSeconds ?? 120
+
     // ── Status: routing ──────────────────────────────────────
     await db.update(tasks).set({ status: 'routing', updatedAt: new Date() }).where(eq(tasks.id, taskId))
     broadcastTaskUpdate(taskId, { status: 'routing' })
@@ -62,7 +63,13 @@ async function handleTask(job: { data: TaskPayload }): Promise<void> {
       status: 'executing',
       selectedModel: decision.selectedModel,
       estimatedCostCents: decision.estimatedCostCents,
-      metadata: { reasoning: decision.reasoning, fallbackChain: decision.fallbackChain },
+      metadata: {
+        reasoning: decision.reasoning,
+        fallbackChain: decision.fallbackChain,
+        baselineModel: decision.baselineModel,
+        baselineCostCents: decision.baselineCostCents,
+        directSavingsCents: decision.baselineCostCents - decision.estimatedCostCents,
+      },
       updatedAt: new Date(),
     }).where(eq(tasks.id, taskId))
 
@@ -123,10 +130,20 @@ async function handleTask(job: { data: TaskPayload }): Promise<void> {
           projectId
         )
 
+        const directSavingsCents = decision.baselineCostCents - result.costCents
+
         // Mark task completed
         await db.update(tasks).set({
           status: 'completed',
           actualCostCents: result.costCents,
+          metadata: {
+            reasoning: decision.reasoning,
+            fallbackChain: decision.fallbackChain,
+            baselineModel: decision.baselineModel,
+            baselineCostCents: decision.baselineCostCents,
+            directSavingsCents,
+            diffSummary,
+          },
           completedAt: new Date(),
           updatedAt: new Date(),
         }).where(eq(tasks.id, taskId))
@@ -134,6 +151,8 @@ async function handleTask(job: { data: TaskPayload }): Promise<void> {
         broadcastTaskUpdate(taskId, {
           status: 'completed',
           costCents: result.costCents,
+          baselineCostCents: decision.baselineCostCents,
+          directSavingsCents,
           ...diffSummary,
         })
 
@@ -203,6 +222,8 @@ async function handleTask(job: { data: TaskPayload }): Promise<void> {
       metadata: {
         reasoning: decision.reasoning,
         fallbackChain: decision.fallbackChain,
+        baselineModel: decision.baselineModel,
+        baselineCostCents: decision.baselineCostCents,
         error: result?.errorMessage ?? 'All models failed',
       },
       updatedAt: new Date(),
@@ -223,11 +244,21 @@ async function handleTask(job: { data: TaskPayload }): Promise<void> {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error'
     console.error(`Task ${taskId} failed:`, errorMessage)
 
+    const [existingTask] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1).catch(() => [])
     await db.update(tasks).set({
       status: 'failed',
-      metadata: { error: errorMessage },
+      metadata: {
+        reasoning: existingTask?.metadata?.reasoning,
+        fallbackChain: existingTask?.metadata?.fallbackChain,
+        baselineModel: existingTask?.metadata?.baselineModel,
+        baselineCostCents: existingTask?.metadata?.baselineCostCents,
+        error: errorMessage,
+      },
       updatedAt: new Date(),
     }).where(eq(tasks.id, taskId)).catch(() => {})
+
+    const teamId = existingTask?.teamId
+    const projectId = existingTask?.projectId
 
     broadcastTaskUpdate(taskId, { status: 'failed', error: errorMessage })
 
@@ -237,12 +268,24 @@ async function handleTask(job: { data: TaskPayload }): Promise<void> {
 
 /** Start the pg-boss consumer. Call after getQueue(). Bug 3 fix. */
 export async function startOrchestrationWorker(): Promise<void> {
+  if (workerStarted) {
+    return
+  }
+
   const queue = await getQueue()
-  await queue.work(
-    QUEUE_NAME,
-    { teamSize: 5, teamConcurrency: 3 } as any,
-    handleTask as any
+  await queue.createQueue(QUEUE_NAME).catch(() => {})
+  workerIds = await Promise.all(
+    Array.from({ length: WORKER_CONCURRENCY }, () =>
+      queue.work(
+        QUEUE_NAME,
+        { batchSize: WORKER_BATCH_SIZE, pollingIntervalSeconds: 1 },
+        async (jobs) => {
+          await Promise.all(jobs.map((queuedJob) => handleTask({ data: queuedJob.data as TaskPayload })))
+        },
+      ),
+    ),
   )
+  workerStarted = true
 }
 
 export { QUEUE_NAME }

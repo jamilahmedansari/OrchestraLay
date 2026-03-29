@@ -5,13 +5,16 @@ import { authedProcedure, dashboardProcedure, apiKeyProcedure } from '../trpc/gu
 import { db } from '../db/index.js'
 import { diffs } from '../db/schema.js'
 import { eq, and, desc, inArray } from 'drizzle-orm'
-import { writeAuditLog } from '../lib/audit.js'
-import { emitEvent } from '../lib/eventEmitter.js'
 
 export const diffsRouter = router({
   getForTask: authedProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      const conditions = [eq(diffs.taskId, input.taskId), eq(diffs.teamId, ctx.auth.teamId)]
+      if (ctx.auth.type === 'apikey') {
+        conditions.push(eq(diffs.projectId, ctx.auth.projectId))
+      }
+
       return db
         .select({
           id: diffs.id,
@@ -26,7 +29,7 @@ export const diffsRouter = router({
           createdAt: diffs.createdAt,
         })
         .from(diffs)
-        .where(and(eq(diffs.taskId, input.taskId), eq(diffs.teamId, ctx.auth.teamId)))
+        .where(and(...conditions))
         .orderBy(desc(diffs.createdAt))
     }),
 
@@ -55,10 +58,15 @@ export const diffsRouter = router({
   getContent: authedProcedure
     .input(z.object({ diffId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
+      const conditions = [eq(diffs.id, input.diffId), eq(diffs.teamId, ctx.auth.teamId)]
+      if (ctx.auth.type === 'apikey') {
+        conditions.push(eq(diffs.projectId, ctx.auth.projectId))
+      }
+
       const [diff] = await db
         .select()
         .from(diffs)
-        .where(and(eq(diffs.id, input.diffId), eq(diffs.teamId, ctx.auth.teamId)))
+        .where(and(...conditions))
         .limit(1)
 
       if (!diff) {
@@ -71,10 +79,15 @@ export const diffsRouter = router({
   approve: authedProcedure
     .input(z.object({ diffId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
+      const conditions = [eq(diffs.id, input.diffId), eq(diffs.teamId, ctx.auth.teamId)]
+      if (ctx.auth.type === 'apikey') {
+        conditions.push(eq(diffs.projectId, ctx.auth.projectId))
+      }
+
       const [diff] = await db
         .select()
         .from(diffs)
-        .where(and(eq(diffs.id, input.diffId), eq(diffs.teamId, ctx.auth.teamId)))
+        .where(and(...conditions))
         .limit(1)
 
       if (!diff) {
@@ -107,10 +120,15 @@ export const diffsRouter = router({
   reject: authedProcedure
     .input(z.object({ diffId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
+      const conditions = [eq(diffs.id, input.diffId), eq(diffs.teamId, ctx.auth.teamId)]
+      if (ctx.auth.type === 'apikey') {
+        conditions.push(eq(diffs.projectId, ctx.auth.projectId))
+      }
+
       const [diff] = await db
         .select()
         .from(diffs)
-        .where(and(eq(diffs.id, input.diffId), eq(diffs.teamId, ctx.auth.teamId)))
+        .where(and(...conditions))
         .limit(1)
 
       if (!diff) {
@@ -139,6 +157,10 @@ export const diffsRouter = router({
         eq(diffs.blocked, false),
       ]
 
+      if (ctx.auth.type === 'apikey') {
+        conditions.push(eq(diffs.projectId, ctx.auth.projectId))
+      }
+
       if (input.taskId) {
         conditions.push(eq(diffs.taskId, input.taskId))
       }
@@ -165,6 +187,7 @@ export const diffsRouter = router({
           and(
             inArray(diffs.id, input.diffIds),
             eq(diffs.teamId, ctx.auth.teamId),
+            eq(diffs.projectId, ctx.auth.projectId),
             eq(diffs.status, 'approved')
           )
         )
@@ -175,10 +198,15 @@ export const diffsRouter = router({
   revert: authedProcedure
     .input(z.object({ diffId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
+      const conditions = [eq(diffs.id, input.diffId), eq(diffs.teamId, ctx.auth.teamId)]
+      if (ctx.auth.type === 'apikey') {
+        conditions.push(eq(diffs.projectId, ctx.auth.projectId))
+      }
+
       const [diff] = await db
         .select()
         .from(diffs)
-        .where(and(eq(diffs.id, input.diffId), eq(diffs.teamId, ctx.auth.teamId)))
+        .where(and(...conditions))
         .limit(1)
 
       if (!diff) {

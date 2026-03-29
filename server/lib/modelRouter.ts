@@ -7,12 +7,16 @@ import {
   MODEL_REGISTRY,
   DEFAULT_MODEL_RANKING,
   estimateCostCents,
+  getBaselineModel,
+  isModelId,
 } from './modelRegistry.js'
 import { isModelAvailable } from './modelHealth.js'
 
 export interface RouterDecision {
   selectedModel: ModelId
   estimatedCostCents: number
+  baselineModel: ModelId
+  baselineCostCents: number
   reasoning: string[]
   fallbackChain: ModelId[]
 }
@@ -27,12 +31,14 @@ export interface ResolveModelInput {
 /** 6-gate decision engine */
 export async function resolveModel(input: ResolveModelInput): Promise<RouterDecision> {
   const reasoning: string[] = []
+  const baselineModel = getBaselineModel(input.taskType)
+  const baselineCostCents = estimateCostCents(baselineModel, input.taskType, input.promptTokens)
 
   // Gate 1 — Preference
   let candidates: ModelId[]
   if (input.preferredModels?.length) {
     const valid = input.preferredModels.filter(
-      (m): m is ModelId => m in MODEL_REGISTRY
+      (m): m is ModelId => isModelId(m)
     )
     if (valid.length > 0) {
       candidates = valid
@@ -113,6 +119,8 @@ export async function resolveModel(input: ResolveModelInput): Promise<RouterDeci
   return {
     selectedModel: selected,
     estimatedCostCents: estimated,
+    baselineModel,
+    baselineCostCents,
     reasoning,
     fallbackChain,
   }

@@ -15,6 +15,7 @@ export const dashboardRouter = router({
     const [
       tasksToday,
       costToday,
+      savingsToday,
       pendingDiffs,
       failedToday,
       recentTasks,
@@ -31,6 +32,13 @@ export const dashboardRouter = router({
         .select({ total: sql<number>`COALESCE(SUM(${costLogs.costCents}), 0)` })
         .from(costLogs)
         .where(and(eq(costLogs.teamId, teamId), gte(costLogs.createdAt, todayStart))),
+
+      db
+        .select({
+          metadata: tasks.metadata,
+        })
+        .from(tasks)
+        .where(and(eq(tasks.teamId, teamId), gte(tasks.createdAt, todayStart), eq(tasks.status, 'completed'))),
 
       // Pending diffs
       db
@@ -59,6 +67,7 @@ export const dashboardRouter = router({
           status: tasks.status,
           selectedModel: tasks.selectedModel,
           actualCostCents: tasks.actualCostCents,
+          metadata: tasks.metadata,
           createdAt: tasks.createdAt,
         })
         .from(tasks)
@@ -74,6 +83,10 @@ export const dashboardRouter = router({
       metrics: {
         tasksToday: tasksToday[0]?.count ?? 0,
         costTodayCents: Number(costToday[0]?.total ?? 0),
+        directSavingsTodayCents: savingsToday.reduce(
+          (sum, task) => sum + (task.metadata?.directSavingsCents ?? 0),
+          0,
+        ),
         pendingDiffs: pendingDiffs[0]?.count ?? 0,
         failedToday: failedToday[0]?.count ?? 0,
       },
@@ -92,6 +105,11 @@ export const dashboardRouter = router({
       const teamId = ctx.auth.teamId
       const since = new Date()
       since.setDate(since.getDate() - input.days)
+
+      const completedTasks = await db
+        .select({ metadata: tasks.metadata })
+        .from(tasks)
+        .where(and(eq(tasks.teamId, teamId), gte(tasks.createdAt, since), eq(tasks.status, 'completed')))
 
       // Daily breakdown by model (for stacked bar chart)
       const dailyCosts = await db
@@ -142,6 +160,10 @@ export const dashboardRouter = router({
         dailyCosts,
         modelBreakdown,
         monthToDateCents: Number(monthTotal?.totalCostCents ?? 0),
+        totalSavingsCents: completedTasks.reduce(
+          (sum, task) => sum + (task.metadata?.directSavingsCents ?? 0),
+          0,
+        ),
         budgetCents: team?.monthlyBudgetCents ?? 0,
         billingPeriod,
       }

@@ -1,6 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk'
-import OpenAI from 'openai'
-import { type ModelId, type TaskType, MODEL_REGISTRY, calculateActualCost } from './modelRegistry.js'
+import { type ModelId, MODEL_REGISTRY, calculateActualCost } from './modelRegistry.js'
 
 export interface ModelCallResult {
   content: string
@@ -11,37 +9,6 @@ export interface ModelCallResult {
   success: boolean
   errorMessage?: string
 }
-
-// ─── Provider clients (lazy init) ────────────────────────────────────
-
-let anthropicClient: Anthropic | null = null
-function getAnthropic(): Anthropic {
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  }
-  return anthropicClient
-}
-
-let openaiClient: OpenAI | null = null
-function getOpenAI(): OpenAI {
-  if (!openaiClient) {
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  }
-  return openaiClient
-}
-
-let perplexityClient: OpenAI | null = null
-function getPerplexity(): OpenAI {
-  if (!perplexityClient) {
-    perplexityClient = new OpenAI({
-      apiKey: process.env.PERPLEXITY_API_KEY,
-      baseURL: 'https://api.perplexity.ai',
-    })
-  }
-  return perplexityClient
-}
-
-// ─── Provider-specific callers ───────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are an AI coding assistant. When making code changes, wrap them in <file_changes> XML tags with the following format:
 <file_changes>
@@ -57,32 +24,55 @@ const SYSTEM_PROMPT = `You are an AI coding assistant. When making code changes,
 
 Always provide complete file contents, not partial snippets.`
 
+function requireApiKey(name: 'ANTHROPIC_API_KEY' | 'OPENAI_API_KEY' | 'PERPLEXITY_API_KEY'): string {
+  const value = process.env[name]
+  if (!value) {
+    throw new Error(`${name} is not configured`)
+  }
+
+  return value
+}
+
+async function parseJson(response: Response): Promise<any> {
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`Model API error ${response.status}: ${text}`)
+  }
+
+  return JSON.parse(text)
+}
+
 async function callAnthropic(
   modelId: ModelId,
   prompt: string,
   signal: AbortSignal
 ): Promise<ModelCallResult> {
   const start = Date.now()
-  const apiModel = modelId === 'claude-3-5-sonnet' ? 'claude-sonnet-4-20250514' : 'claude-3-5-haiku-20241022'
+  const apiModel = modelId === 'claude-3-5-sonnet' ? 'claude-3-5-sonnet-20241022' : 'claude-3-5-haiku-20241022'
 
   try {
-    const response = await getAnthropic().messages.create(
-      {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': requireApiKey('ANTHROPIC_API_KEY'),
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
         model: apiModel,
         max_tokens: 4096,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: prompt }],
-      },
-      { signal }
-    )
-
-    const content = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
+      }),
+      signal,
+    })
+    const json = await parseJson(response)
+    const content = (json.content ?? [])
+      .filter((block: { type?: string }) => block.type === 'text')
+      .map((block: { text?: string }) => block.text ?? '')
       .join('')
-
-    const promptTokens = response.usage.input_tokens
-    const completionTokens = response.usage.output_tokens
+    const promptTokens = json.usage?.input_tokens ?? 0
+    const completionTokens = json.usage?.output_tokens ?? 0
     const costCents = calculateActualCost(modelId, promptTokens, completionTokens)
 
     return {
@@ -114,21 +104,26 @@ async function callOpenAI(
   const start = Date.now()
 
   try {
-    const response = await getOpenAI().chat.completions.create(
-      {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${requireApiKey('OPENAI_API_KEY')}`,
+      },
+      body: JSON.stringify({
         model: modelId,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: prompt },
         ],
         max_tokens: 4096,
-      },
-      { signal }
-    )
-
-    const content = response.choices[0]?.message?.content ?? ''
-    const promptTokens = response.usage?.prompt_tokens ?? 0
-    const completionTokens = response.usage?.completion_tokens ?? 0
+      }),
+      signal,
+    })
+    const json = await parseJson(response)
+    const content = json.choices?.[0]?.message?.content ?? ''
+    const promptTokens = json.usage?.prompt_tokens ?? 0
+    const completionTokens = json.usage?.completion_tokens ?? 0
     const costCents = calculateActualCost(modelId, promptTokens, completionTokens)
 
     return {
@@ -161,21 +156,26 @@ async function callPerplexity(
   const apiModel = modelId === 'perplexity-sonar-pro' ? 'sonar-pro' : 'sonar'
 
   try {
-    const response = await getPerplexity().chat.completions.create(
-      {
+    const response = await fetch('https://api.perplexity.ai/chat/completions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${requireApiKey('PERPLEXITY_API_KEY')}`,
+      },
+      body: JSON.stringify({
         model: apiModel,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: prompt },
         ],
         max_tokens: 4096,
-      },
-      { signal }
-    )
-
-    const content = response.choices[0]?.message?.content ?? ''
-    const promptTokens = response.usage?.prompt_tokens ?? 0
-    const completionTokens = response.usage?.completion_tokens ?? 0
+      }),
+      signal,
+    })
+    const json = await parseJson(response)
+    const content = json.choices?.[0]?.message?.content ?? ''
+    const promptTokens = json.usage?.prompt_tokens ?? 0
+    const completionTokens = json.usage?.completion_tokens ?? 0
     const costCents = calculateActualCost(modelId, promptTokens, completionTokens)
 
     return {

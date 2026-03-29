@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TRPCError } from '@trpc/server'
 import { router } from '../trpc/trpc.js'
 import { dashboardProcedure } from '../trpc/guards.js'
 import { db } from '../db/index.js'
@@ -31,7 +32,7 @@ export const authRouter = router({
         .limit(1)
 
       if (!project) {
-        throw new Error('Project not found')
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Project not found' })
       }
 
       const { raw, hash, prefix } = generateApiKey()
@@ -109,7 +110,7 @@ export const authRouter = router({
         .limit(1)
 
       if (!key) {
-        throw new Error('API key not found')
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'API key not found' })
       }
 
       await db

@@ -4,8 +4,8 @@ import { router } from '../trpc/trpc.js'
 import { authedProcedure, dashboardProcedure, apiKeyProcedure } from '../trpc/guards.js'
 import { db } from '../db/index.js'
 // Bug 4 fix: correct imports
-import { tasks, projects, modelResults, diffs, costLogs } from '../db/schema.js'
-import { eq, and, desc, inArray, count, gte, sql } from 'drizzle-orm'
+import { tasks, diffs } from '../db/schema.js'
+import { eq, and, desc, count } from 'drizzle-orm'
 import { getQueue } from '../lib/queue.js'
 import { enforceBudget } from '../lib/budgetGuard.js'
 import { enforceRateLimit } from '../lib/rateLimiter.js'
@@ -44,16 +44,7 @@ export const tasksRouter = router({
 
       // Enqueue job — fire and forget
       const queue = await getQueue()
-      await queue.send(QUEUE_NAME, {
-        taskId: task.id,
-        projectId: ctx.auth.projectId,
-        teamId: ctx.auth.teamId,
-        prompt: input.prompt,
-        taskType: input.taskType,
-        preferredModels: input.preferredModels,
-        budgetCents: input.budgetCents,
-        timeoutSeconds: input.timeoutSeconds ?? 120,
-      })
+      await queue.send(QUEUE_NAME, { taskId: task.id })
 
       writeAuditLog({
         teamId: ctx.auth.teamId,
@@ -71,12 +62,15 @@ export const tasksRouter = router({
   getStatus: authedProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
-      const teamId = ctx.auth.type === 'dashboard' ? ctx.auth.teamId : ctx.auth.teamId
+      const conditions = [eq(tasks.id, input.taskId), eq(tasks.teamId, ctx.auth.teamId)]
+      if (ctx.auth.type === 'apikey') {
+        conditions.push(eq(tasks.projectId, ctx.auth.projectId))
+      }
 
       const [task] = await db
         .select()
         .from(tasks)
-        .where(and(eq(tasks.id, input.taskId), eq(tasks.teamId, teamId)))
+        .where(and(...conditions))
         .limit(1)
 
       if (!task) {
@@ -92,6 +86,8 @@ export const tasksRouter = router({
       return {
         ...task,
         diffCount: diffCount?.count ?? 0,
+        baselineCostCents: task.metadata?.baselineCostCents ?? null,
+        directSavingsCents: task.metadata?.directSavingsCents ?? null,
       }
     }),
 
@@ -131,12 +127,15 @@ export const tasksRouter = router({
   cancel: authedProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      const teamId = ctx.auth.teamId
+      const conditions = [eq(tasks.id, input.taskId), eq(tasks.teamId, ctx.auth.teamId)]
+      if (ctx.auth.type === 'apikey') {
+        conditions.push(eq(tasks.projectId, ctx.auth.projectId))
+      }
 
       const [task] = await db
         .select()
         .from(tasks)
-        .where(and(eq(tasks.id, input.taskId), eq(tasks.teamId, teamId)))
+        .where(and(...conditions))
         .limit(1)
 
       if (!task) {
@@ -157,7 +156,7 @@ export const tasksRouter = router({
         .where(eq(tasks.id, input.taskId))
 
       writeAuditLog({
-        teamId,
+        teamId: ctx.auth.teamId,
         action: 'task.cancelled',
         resource: 'task',
         resourceId: input.taskId,

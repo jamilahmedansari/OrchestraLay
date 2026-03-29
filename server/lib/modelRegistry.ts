@@ -21,6 +21,15 @@ export interface ModelSpec {
   avgOutputTokens: Record<TaskType, number>
 }
 
+export const MODEL_IDS: readonly ModelId[] = [
+  'claude-3-5-sonnet',
+  'claude-3-haiku',
+  'gpt-4o',
+  'gpt-4o-mini',
+  'perplexity-sonar-pro',
+  'perplexity-sonar',
+] as const
+
 export const MODEL_REGISTRY: Record<ModelId, ModelSpec> = {
   'claude-3-5-sonnet': {
     id: 'claude-3-5-sonnet',
@@ -120,13 +129,29 @@ export const MODEL_REGISTRY: Record<ModelId, ModelSpec> = {
   },
 }
 
-/** Default ranking per task type — first is best */
+/** Default ranking per task type — first is cheapest likely-successful option. */
 export const DEFAULT_MODEL_RANKING: Record<TaskType, ModelId[]> = {
   code_generation: ['claude-3-5-sonnet', 'gpt-4o', 'claude-3-haiku', 'gpt-4o-mini', 'perplexity-sonar-pro', 'perplexity-sonar'],
-  debugging: ['claude-3-haiku', 'gpt-4o', 'claude-3-5-sonnet', 'gpt-4o-mini', 'perplexity-sonar-pro', 'perplexity-sonar'],
+  debugging: ['claude-3-haiku', 'gpt-4o-mini', 'gpt-4o', 'claude-3-5-sonnet', 'perplexity-sonar', 'perplexity-sonar-pro'],
   refactoring: ['claude-3-5-sonnet', 'gpt-4o', 'claude-3-haiku', 'gpt-4o-mini', 'perplexity-sonar-pro', 'perplexity-sonar'],
-  analysis: ['gpt-4o', 'perplexity-sonar-pro', 'claude-3-5-sonnet', 'claude-3-haiku', 'gpt-4o-mini', 'perplexity-sonar'],
+  analysis: ['gpt-4o-mini', 'perplexity-sonar', 'claude-3-haiku', 'gpt-4o', 'perplexity-sonar-pro', 'claude-3-5-sonnet'],
   review: ['claude-3-5-sonnet', 'gpt-4o', 'claude-3-haiku', 'gpt-4o-mini', 'perplexity-sonar-pro', 'perplexity-sonar'],
+}
+
+export const PREMIUM_BASELINE_MODEL: Record<TaskType, ModelId> = {
+  code_generation: 'claude-3-5-sonnet',
+  debugging: 'gpt-4o',
+  refactoring: 'claude-3-5-sonnet',
+  analysis: 'gpt-4o',
+  review: 'claude-3-5-sonnet',
+}
+
+export function isModelId(value: string): value is ModelId {
+  return (MODEL_IDS as readonly string[]).includes(value)
+}
+
+export function getBaselineModel(taskType: TaskType): ModelId {
+  return PREMIUM_BASELINE_MODEL[taskType]
 }
 
 /** Estimate cost in integer cents using avg output tokens for task type */

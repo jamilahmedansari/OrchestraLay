@@ -9,6 +9,7 @@ Route AI tasks to Claude, GPT-4o, or Perplexity. See exactly what each call cost
 AI coding agents on Replit and Vercel are unpredictable — they burn through budgets without warning and make breaking changes you only discover after the damage is done. OrchestraLay puts you in control:
 
 - Routes each task to the best available model based on cost, health, and task type
+- Compares actual routed spend against a premium baseline so savings are explicit per task
 - Shows the cost down to fractions of a cent per model call
 - Requires your explicit approval on every file change before anything is written to disk
 - Falls back to the next model automatically if one fails or times out
@@ -75,9 +76,11 @@ Three views at `http://localhost:5173`:
 
 **Overview** — live task feed showing task ID, prompt, model used, status, cost, and age. Updates in real time via Supabase Realtime.
 
-**Costs** — 7-day spend breakdown by model, month-to-date total against your plan budget, exact token and cost figures per model.
+**Costs** — 7-day spend breakdown by model, month-to-date total against your plan budget, and direct savings versus a premium baseline.
 
 **Diff review** — every pending file change across your projects. Flagged diffs show why. Blocked diffs require changing project safety settings before they can be applied.
+
+The current dashboard client expects a Supabase dashboard JWT in local storage under `orchestralay.auth.token`. If you work across multiple teams, pass `?teamId=<uuid>` in the dashboard URL so the server resolves the correct membership.
 
 ---
 
@@ -92,7 +95,9 @@ Each task runs through 6 gates in order:
 5. **Select** — first remaining candidate wins
 6. **Fallback** — if the selected model fails mid-execution, automatically retry with the next
 
-The routing decision (which model was chosen and why) is stored with every task and visible in the dashboard.
+For low-risk analysis and debugging work, the default ranking is intentionally cheaper-first. OrchestraLay still tracks a premium baseline model per task type so the task record can show what you paid, what the premium path would have cost, and the direct savings delta.
+
+The routing decision and baseline comparison are stored with every task and surfaced through the dashboard and CLI.
 
 ---
 

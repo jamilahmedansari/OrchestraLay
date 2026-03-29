@@ -168,6 +168,14 @@ export const tasks = pgTable(
     metadata: jsonb('metadata').$type<{
       reasoning?: string[]
       fallbackChain?: string[]
+      baselineModel?: string
+      baselineCostCents?: number
+      directSavingsCents?: number
+      diffSummary?: {
+        diffCount: number
+        blockedCount: number
+        flaggedCount: number
+      }
       error?: string
     }>(),
     completedAt: timestamp('completed_at', { withTimezone: true }),
