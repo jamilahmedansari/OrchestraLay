@@ -3,17 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "concurrently \"tsx watch server/index.ts\" \"vite\"",
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite",
-    "build": "vite build && tsc -p tsconfig.server.json",
+    "build": "vite build && tsc -p tsconfig.server.json && tsc -p tsconfig.cli.json",
     "start": "node dist/server/index.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cli": "tsx cli/index.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -30,6 +34,7 @@
     "drizzle-orm": "^0.38.3",
     "express": "^4.21.1",
     "openai": "^4.77.0",
+    "pg": "^8.11.0",
     "pg-boss": "^10.1.5",
     "postgres": "^3.4.5",
     "react": "^19.0.0",
@@ -44,6 +49,7 @@
     "@types/diff": "^6.0.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.0",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",
