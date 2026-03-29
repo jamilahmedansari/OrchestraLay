@@ -4,8 +4,16 @@ import type { AppRouter } from '../../server/routers/index.js'
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001'
 
-function getToken(): string {
+export function getToken(): string {
   return localStorage.getItem('olay_token') ?? ''
+}
+
+export function setToken(token: string) {
+  localStorage.setItem('olay_token', token)
+}
+
+export function clearToken() {
+  localStorage.removeItem('olay_token')
 }
 
 export const trpc = createTRPCClient<AppRouter>({
