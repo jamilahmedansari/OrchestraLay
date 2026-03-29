@@ -16,7 +16,7 @@ export function parseFileChanges(raw: string): FileChange[] {
     if (!path || !operation) continue
     const op = operation as FileChange['operation']
     if (!['create', 'modify', 'delete'].includes(op)) continue
-    changes.push({ path: path.trim(), operation: op, content: content.trim() })
+    changes.push({ path: path.trim(), operation: op, content: (content || '').trim() })
   }
 
   return changes

@@ -27,9 +27,9 @@ export type OrchestrateTaskPayload = {
   projectId: string
   prompt: string
   taskType: TaskType
-  preferredModel?: string
-  budgetCapCents?: number
-  actorId?: string
+  preferredModel?: string | undefined
+  budgetCapCents?: number | undefined
+  actorId?: string | undefined
 }
 
 const SYSTEM_PROMPT = `You are an expert software engineer helping developers write, debug, and refactor code.
@@ -62,7 +62,7 @@ async function executeWithModel(
   job: OrchestrateTaskPayload,
   modelId: string,
   attempt: number,
-): Promise<{ content: string; inputTokens: number; outputTokens: number; costCents: number; durationMs: number }> {
+): Promise<{ content: string; inputTokens: number; outputTokens: number; costCents: number; durationMs: number; modelResultId: string }> {
   const modelSpec = getModel(modelId as Parameters<typeof getModel>[0])
 
   incrementConcurrency(modelSpec.id)
@@ -80,7 +80,7 @@ async function executeWithModel(
     recordSuccess(modelSpec.id)
 
     // Persist model result
-    await db.insert(modelResults).values({
+    const [modelResult] = await db.insert(modelResults).values({
       taskId: job.taskId,
       modelId: modelSpec.id,
       attempt,
@@ -90,9 +90,9 @@ async function executeWithModel(
       costCents,
       durationMs: result.durationMs,
       rawResponse: result.content,
-    })
+    }).returning()
 
-    return { ...result, costCents }
+    return { ...result, costCents, modelResultId: modelResult!.id }
   } catch (err) {
     recordFailure(modelSpec.id)
 
@@ -123,8 +123,10 @@ export async function startOrchestrationWorker(): Promise<void> {
 
   await queue.work<OrchestrateTaskPayload>(
     ORCHESTRATE_TASK_JOB,
-    { teamSize: 5, teamConcurrency: 3 },
-    async (job) => {
+    async (jobs) => {
+      const job = Array.isArray(jobs) ? jobs[0] : jobs
+      if (!job) return
+
       const payload = job.data
       const { taskId, teamId, projectId, prompt, taskType, preferredModel, actorId } = payload
 
@@ -136,12 +138,19 @@ export async function startOrchestrationWorker(): Promise<void> {
         await broadcastTaskUpdate({ taskId, status: 'routing' })
 
         const estimatedTokens = estimateTokens(prompt)
-        const routingResult = await resolveModel({
-          taskType,
-          teamId,
-          estimatedInputTokens: estimatedTokens,
-          preferredModel: preferredModel as Parameters<typeof resolveModel>[0]['preferredModel'],
-        })
+        const routingInput: Parameters<typeof resolveModel>[0] = preferredModel
+          ? {
+              taskType,
+              teamId,
+              estimatedInputTokens: estimatedTokens,
+              preferredModel: preferredModel as Parameters<typeof resolveModel>[0]['preferredModel'],
+            }
+          : {
+              taskType,
+              teamId,
+              estimatedInputTokens: estimatedTokens,
+            }
+        const routingResult = await resolveModel(routingInput)
 
         const selectedModel = routingResult.model
 
@@ -152,7 +161,7 @@ export async function startOrchestrationWorker(): Promise<void> {
 
         await writeAuditLog({
           teamId,
-          actorId,
+          ...(actorId ? { actorId } : {}),
           action: 'task.routing',
           resourceType: 'task',
           resourceId: taskId,
@@ -191,12 +200,12 @@ export async function startOrchestrationWorker(): Promise<void> {
         await incrementSpend(teamId, execResult.costCents)
 
         // --- DIFF PROCESSING ---
-        const { content, costCents, inputTokens, outputTokens } = execResult
+        const { content, costCents, inputTokens, outputTokens, modelResultId } = execResult
 
         if (hasFileChanges(content)) {
           const changes = parseFileChanges(content)
           if (changes.length > 0) {
-            await processDiffs(taskId, projectId, changes)
+            await processDiffs(taskId, projectId, modelResultId, changes)
           }
         }
 
@@ -212,7 +221,7 @@ export async function startOrchestrationWorker(): Promise<void> {
         await emitTaskEvent({ taskId, status: 'completed', teamId, projectId, modelId: usedModelId, costCents })
         await writeAuditLog({
           teamId,
-          actorId,
+          ...(actorId ? { actorId } : {}),
           action: 'task.completed',
           resourceType: 'task',
           resourceId: taskId,
@@ -229,7 +238,7 @@ export async function startOrchestrationWorker(): Promise<void> {
         await emitTaskEvent({ taskId, status: 'failed', teamId, projectId, error: errorMessage })
         await writeAuditLog({
           teamId,
-          actorId,
+          ...(actorId ? { actorId } : {}),
           action: 'task.failed',
           resourceType: 'task',
           resourceId: taskId,

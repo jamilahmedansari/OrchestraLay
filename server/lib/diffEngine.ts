@@ -94,6 +94,7 @@ function runSafetyChecks(change: FileChange): SafetyFlag[] {
 export async function processDiffs(
   taskId: string,
   projectId: string,
+  modelResultId: string,
   changes: FileChange[],
   originalContents: Record<string, string> = {},
 ): Promise<void> {
@@ -110,10 +111,15 @@ export async function processDiffs(
     await db.insert(diffs).values({
       taskId,
       projectId,
+      modelResultId,
       filePath: change.path,
       operation: change.operation,
+      beforeContent: original || null,
+      afterContent: change.operation === 'delete' ? null : change.content,
       unifiedDiff: unified,
-      safetyFlags: flags as unknown as Record<string, unknown>[],
+      safetyViolations: flags as unknown as Record<string, unknown>[],
+      flagged: flags.length > 0,
+      blocked: hasBlocks,
       status,
     })
   }

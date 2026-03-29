@@ -17,7 +17,7 @@ type RouterInput = {
   taskType: TaskType
   teamId: string
   estimatedInputTokens: number
-  preferredModel?: ModelId
+  preferredModel?: ModelId | undefined
 }
 
 export async function resolveModel(input: RouterInput): Promise<RoutingDecision> {
@@ -105,6 +105,9 @@ export async function resolveModel(input: RouterInput): Promise<RoutingDecision>
 
   // Gate 5: Select — first candidate wins (already sorted by ranking/preference)
   const selected = available[0]
+  if (!selected) {
+    throw new Error('ROUTING_ERROR: No models available after all filters')
+  }
   reasoning.push(`Gate 5 (Select): ${selected.id} selected`)
 
   return { model: selected, reasoning }
@@ -112,12 +115,14 @@ export async function resolveModel(input: RouterInput): Promise<RoutingDecision>
 
 export async function resolveFailover(
   excludeModelId: ModelId,
-  input: RouterInput,
+  input: Omit<RouterInput, 'preferredModel'> & { preferredModel?: ModelId },
 ): Promise<RoutingDecision | null> {
   try {
     const result = await resolveModel({
-      ...input,
-      preferredModel: undefined, // ignore preference for failover
+      taskType: input.taskType,
+      teamId: input.teamId,
+      estimatedInputTokens: input.estimatedInputTokens,
+      // omit preferredModel to ignore preference for failover
     })
     // If same model selected again, no failover available
     if (result.model.id === excludeModelId) return null

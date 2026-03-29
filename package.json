@@ -27,6 +27,7 @@
     "cli": "tsx cli/index.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
     "@supabase/supabase-js": "^2.57.4",
     "@tanstack/react-query": "^5.90.5",
     "@trpc/client": "^11.7.1",

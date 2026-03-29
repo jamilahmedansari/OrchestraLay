@@ -123,9 +123,11 @@ export const tasksRouter = createTRPCRouter({
     }
 
     await db.update(tasks).set({ status: 'cancelled', updatedAt: new Date() }).where(eq(tasks.id, input.taskId))
+
+    const actorId = ctx.auth.type === 'dashboard' ? ctx.auth.userId : undefined
     await writeAuditLog({
       teamId,
-      actorId: ctx.auth.type === 'dashboard' ? ctx.auth.userId : undefined,
+      ...(actorId ? { actorId } : {}),
       action: 'task.cancelled',
       resourceType: 'task',
       resourceId: input.taskId,

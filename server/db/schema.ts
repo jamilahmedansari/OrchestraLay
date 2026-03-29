@@ -44,6 +44,7 @@ export const taskStatusEnum = pgEnum('task_status', [
   'cancelled',
 ])
 export const diffOperationEnum = pgEnum('diff_operation', ['create', 'modify', 'delete'])
+export const diffStatusEnum = pgEnum('diff_status', ['pending', 'approved', 'rejected', 'blocked', 'applied', 'reverted'])
 export const modelResultStatusEnum = pgEnum('model_result_status', ['success', 'failed'])
 
 const timestamps = {
@@ -144,11 +145,14 @@ export const tasks = pgTable(
     submittedByUserId: uuid('submitted_by_user_id').references(() => users.id, { onDelete: 'set null' }),
     prompt: text('prompt').notNull(),
     taskType: taskTypeEnum('task_type').notNull(),
-    preferredModels: jsonb('preferred_models').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    preferredModel: varchar('preferred_model', { length: 64 }),
     budgetCents: integer('budget_cents').notNull().default(0),
     timeoutSeconds: integer('timeout_seconds').notNull().default(60),
     status: taskStatusEnum('status').notNull().default('submitted'),
-    selectedModel: varchar('selected_model', { length: 64 }),
+    modelId: varchar('model_id', { length: 64 }),
+    outputSummary: text('output_summary'),
+    totalCostCents: integer('total_cost_cents').notNull().default(0),
+    errorMessage: text('error_message'),
     routingReasoning: jsonb('routing_reasoning').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     metadata: jsonb('metadata').$type<TaskMetadata>().notNull().default({}),
     completedAt: timestamp('completed_at', { withTimezone: true }),
@@ -166,15 +170,14 @@ export const modelResults = pgTable(
   {
     id: uuid('id').defaultRandom().primaryKey(),
     taskId: uuid('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
-    modelName: varchar('model_name', { length: 64 }).notNull(),
-    provider: varchar('provider', { length: 32 }).notNull(),
+    modelId: varchar('model_id', { length: 64 }).notNull(),
+    attempt: integer('attempt').notNull().default(1),
     status: modelResultStatusEnum('status').notNull(),
     inputTokens: integer('input_tokens').notNull().default(0),
     outputTokens: integer('output_tokens').notNull().default(0),
-    totalTokens: integer('total_tokens').notNull().default(0),
     costCents: integer('cost_cents').notNull().default(0),
-    latencyMs: integer('latency_ms').notNull().default(0),
-    content: text('content'),
+    durationMs: integer('duration_ms').notNull().default(0),
+    rawResponse: text('raw_response'),
     errorMessage: text('error_message'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -188,14 +191,17 @@ export const diffs = pgTable(
   {
     id: uuid('id').defaultRandom().primaryKey(),
     taskId: uuid('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
     modelResultId: uuid('model_result_id').notNull().references(() => modelResults.id, { onDelete: 'cascade' }),
     operation: diffOperationEnum('operation').notNull(),
     filePath: text('file_path').notNull(),
     beforeContent: text('before_content'),
     afterContent: text('after_content'),
+    unifiedDiff: text('unified_diff'),
     hunks: jsonb('hunks').$type<JsonObject[]>().notNull().default(sql`'[]'::jsonb`),
     linesAdded: integer('lines_added').notNull().default(0),
     linesRemoved: integer('lines_removed').notNull().default(0),
+    status: diffStatusEnum('status').notNull().default('pending'),
     flagged: boolean('flagged').notNull().default(false),
     blocked: boolean('blocked').notNull().default(false),
     safetyViolations: jsonb('safety_violations').$type<JsonObject[]>().notNull().default(sql`'[]'::jsonb`),
@@ -209,6 +215,8 @@ export const diffs = pgTable(
   },
   (table) => ({
     taskIdx: index('diffs_task_idx').on(table.taskId),
+    projectIdx: index('diffs_project_idx').on(table.projectId),
+    statusIdx: index('diffs_status_idx').on(table.status),
     blockedIdx: index('diffs_blocked_idx').on(table.blocked, table.flagged),
   }),
 )
@@ -287,13 +295,11 @@ export const featureFlags = pgTable('feature_flags', {
 export const auditLogs = pgTable('audit_logs', {
   id: uuid('id').defaultRandom().primaryKey(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
-  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
-  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
-  apiKeyId: uuid('api_key_id').references(() => apiKeys.id, { onDelete: 'set null' }),
+  actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
   action: varchar('action', { length: 120 }).notNull(),
-  entityType: varchar('entity_type', { length: 120 }).notNull(),
-  entityId: text('entity_id'),
-  payload: jsonb('payload').$type<JsonObject>().notNull().default({}),
+  resourceType: varchar('resource_type', { length: 120 }).notNull(),
+  resourceId: text('resource_id'),
+  metadata: jsonb('metadata').$type<JsonObject>().notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 })
 

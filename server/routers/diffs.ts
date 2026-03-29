@@ -83,7 +83,7 @@ export const diffsRouter = createTRPCRouter({
       throw new TRPCError({ code: 'FORBIDDEN', message: 'Diff is blocked by safety rules. Change project settings first.' })
     }
 
-    await db.update(diffs).set({ status: 'approved', reviewedAt: new Date(), reviewedBy: userId }).where(eq(diffs.id, input.diffId))
+    await db.update(diffs).set({ status: 'approved', approvedAt: new Date(), approvedByUserId: userId }).where(eq(diffs.id, input.diffId))
     await writeAuditLog({
       teamId,
       actorId: userId,
@@ -111,7 +111,7 @@ export const diffsRouter = createTRPCRouter({
 
     if (!row) throw new TRPCError({ code: 'NOT_FOUND' })
 
-    await db.update(diffs).set({ status: 'rejected', reviewedAt: new Date(), reviewedBy: userId }).where(eq(diffs.id, input.diffId))
+    await db.update(diffs).set({ status: 'rejected', rejectedAt: new Date(), rejectedByUserId: userId }).where(eq(diffs.id, input.diffId))
     await writeAuditLog({
       teamId,
       actorId: userId,
@@ -201,7 +201,7 @@ export const diffsRouter = createTRPCRouter({
 
     await db
       .update(diffs)
-      .set({ status: 'approved', reviewedAt: new Date(), reviewedBy: userId })
+      .set({ status: 'approved', approvedAt: new Date(), approvedByUserId: userId })
       .where(and(eq(diffs.taskId, input.taskId), eq(diffs.status, 'pending')))
 
     return { approved: pendingDiffs.length }
