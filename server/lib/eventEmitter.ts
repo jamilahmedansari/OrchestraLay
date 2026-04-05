@@ -25,7 +25,23 @@ export function emitTaskEvent(event: TaskEvent): void {
     method: 'POST',
     headers,
     body: JSON.stringify({ ...event, emittedAt: new Date().toISOString() }),
+    signal: AbortSignal.timeout(3000),
   }).catch((err) => {
     console.warn('[eventEmitter] n8n webhook failed:', err)
   })
+}
+
+/** Convenience wrapper matching orchestrateTask call convention: emitEvent('task.completed', { ... }) */
+export function emitEvent(type: string, data: Record<string, unknown>): void {
+  const event: TaskEvent = {
+    taskId: data.taskId as string,
+    status: type,
+    teamId: data.teamId as string,
+    projectId: data.projectId as string,
+  }
+  if (data.model || data.modelId) event.modelId = (data.model ?? data.modelId) as string
+  if (data.costCents != null) event.costCents = data.costCents as number
+  if (data.error != null) event.error = data.error as string
+  if (data.metadata != null) event.metadata = data.metadata as Record<string, unknown>
+  emitTaskEvent(event)
 }

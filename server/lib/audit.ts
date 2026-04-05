@@ -22,16 +22,16 @@ export async function writeAuditLog(params: {
   teamId: string
   actorId?: string
   action: AuditAction
-  resourceType: string
+  resource: string
   resourceId: string
   metadata?: Record<string, unknown>
 }): Promise<void> {
   try {
     await db.insert(auditLogs).values({
       teamId: params.teamId,
-      actorId: params.actorId ?? null,
+      userId: params.actorId ?? null,
       action: params.action,
-      resourceType: params.resourceType,
+      resource: params.resource,
       resourceId: params.resourceId,
       metadata: params.metadata ?? {},
     })

@@ -1,9 +1,9 @@
 // diffEngine.ts — parse → diff → safety check → persist to DB
 
-import { createTwoFilesPatch } from 'diff'
+import { createTwoFilesPatch, parsePatch } from 'diff'
 import { db } from '../db/index.js'
 import { diffs } from '../db/schema.js'
-import type { FileChange } from './outputParser.js'
+import { parseFileChanges, type FileChange } from './outputParser.js'
 
 export type SafetyFlag = {
   rule: string
@@ -91,36 +91,91 @@ function runSafetyChecks(change: FileChange): SafetyFlag[] {
   return flags
 }
 
+function parseHunks(unified: string): Array<{ oldStart: number; oldLines: number; newStart: number; newLines: number; content: string }> {
+  const patches = parsePatch(unified)
+  const first = patches[0]
+  if (!first?.hunks) return []
+  return first.hunks.map((h) => ({
+    oldStart: h.oldStart,
+    oldLines: h.oldLines,
+    newStart: h.newStart,
+    newLines: h.newLines,
+    content: h.lines.join('\n'),
+  }))
+}
+
+function countLines(unified: string): { added: number; removed: number } {
+  let added = 0
+  let removed = 0
+  for (const line of unified.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) added++
+    if (line.startsWith('-') && !line.startsWith('---')) removed++
+  }
+  return { added, removed }
+}
+
 export async function processDiffs(
   taskId: string,
   projectId: string,
   modelResultId: string,
   changes: FileChange[],
+  teamId: string,
   originalContents: Record<string, string> = {},
-): Promise<void> {
+): Promise<{ diffCount: number; blockedCount: number; flaggedCount: number }> {
+  let diffCount = 0
+  let blockedCount = 0
+  let flaggedCount = 0
+
   for (const change of changes) {
     const original = originalContents[change.path] ?? ''
     const unified = change.operation === 'delete'
       ? computeDiff(change.path, original, '')
       : computeDiff(change.path, original, change.content)
 
+    const hunks = parseHunks(unified)
+    const { added, removed } = countLines(unified)
     const flags = runSafetyChecks(change)
     const hasBlocks = flags.some((f) => f.severity === 'block')
-    const status = hasBlocks ? 'blocked' : 'pending'
+    // 'blocked' is tracked via the boolean column, not the status enum
+    const status = 'pending' as const
 
     await db.insert(diffs).values({
       taskId,
       projectId,
+      teamId,
       modelResultId,
       filePath: change.path,
       operation: change.operation,
       beforeContent: original || null,
       afterContent: change.operation === 'delete' ? null : change.content,
-      unifiedDiff: unified,
-      safetyViolations: flags as unknown as Record<string, unknown>[],
+      hunks: hunks as any,
+      linesAdded: added,
+      linesRemoved: removed,
+      safetyViolations: flags as any,
       flagged: flags.length > 0,
       blocked: hasBlocks,
       status,
     })
+
+    diffCount++
+    if (hasBlocks) blockedCount++
+    if (flags.length > 0) flaggedCount++
   }
+
+  return { diffCount, blockedCount, flaggedCount }
+}
+
+/** Wrapper matching orchestrateTask call convention: parses raw content, runs diffs, returns summary */
+export async function runDiffEngine(
+  taskId: string,
+  modelResultId: string,
+  rawContent: string,
+  projectId: string,
+  teamId?: string,
+): Promise<{ diffCount: number; blockedCount: number; flaggedCount: number }> {
+  const changes = parseFileChanges(rawContent)
+  if (changes.length === 0) {
+    return { diffCount: 0, blockedCount: 0, flaggedCount: 0 }
+  }
+  return processDiffs(taskId, projectId, modelResultId, changes, teamId ?? projectId)
 }

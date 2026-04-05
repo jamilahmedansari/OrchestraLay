@@ -4,13 +4,24 @@ import { supabaseAdmin } from './supabase.js'
 
 export type TaskUpdatePayload = {
   taskId: string
-  status: string
+  status?: string
+  event?: string
   modelId?: string
+  selectedModel?: string
+  failedModel?: string
+  nextModel?: string
   costCents?: number
+  baselineCostCents?: number
+  directSavingsCents?: number
+  diffCount?: number
+  blockedCount?: number
+  flaggedCount?: number
   error?: string
+  message?: string
 }
 
-export async function broadcastTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
+export async function broadcastTaskUpdate(taskId: string, data: Omit<TaskUpdatePayload, 'taskId'>): Promise<void> {
+  const payload: TaskUpdatePayload = { taskId, ...data }
   try {
     await supabaseAdmin.channel('task-updates').send({
       type: 'broadcast',

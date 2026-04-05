@@ -34,7 +34,7 @@ export function recordFailure(modelId: ModelId): void {
   }
 }
 
-export function recordSuccess(modelId: ModelId): void {
+export function recordSuccess(modelId: ModelId, _latencyMs?: number): void {
   const record = getRecord(modelId)
   record.timestamps = []
   record.trippedAt = null
@@ -71,3 +71,6 @@ export function getHealthStatus(): Record<ModelId, { healthy: boolean; recentFai
   }
   return result as Record<ModelId, { healthy: boolean; recentFailures: number }>
 }
+
+/** Alias for isHealthy — used by modelRouter */
+export const isModelAvailable = isHealthy

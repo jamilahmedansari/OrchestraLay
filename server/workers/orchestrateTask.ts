@@ -127,7 +127,8 @@ async function handleTask(job: { data: TaskPayload }): Promise<void> {
           taskId,
           modelResult.id,
           result.content,
-          projectId
+          projectId,
+          teamId
         )
 
         const directSavingsCents = decision.baselineCostCents - result.costCents

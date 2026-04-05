@@ -28,6 +28,9 @@ export async function assertBudget(teamId: string, estimatedCostCents: number): 
   }
 }
 
+/** Alias for assertBudget — used by tasks router */
+export const enforceBudget = assertBudget
+
 export async function incrementSpend(teamId: string, costCents: number): Promise<void> {
   // Atomic increment — raw SQL to avoid race conditions
   await db.execute(

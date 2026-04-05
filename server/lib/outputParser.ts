@@ -8,15 +8,21 @@ export type FileChange = {
 
 export function parseFileChanges(raw: string): FileChange[] {
   const changes: FileChange[] = []
-  const blockRegex = /<file_change\s+path="([^"]+)"\s+operation="([^"]+)">([\s\S]*?)<\/file_change>/g
+  // Matches <file path="..." operation="...">...</file> as used in the SYSTEM_PROMPT
+  const blockRegex = /<file\s+path="([^"]+)"\s+operation="([^"]+)">([\s\S]*?)<\/file>/g
   let match: RegExpExecArray | null
 
   while ((match = blockRegex.exec(raw)) !== null) {
-    const [, path, operation, content] = match
+    const [, path, operation, innerContent] = match
     if (!path || !operation) continue
     const op = operation as FileChange['operation']
     if (!['create', 'modify', 'delete'].includes(op)) continue
-    changes.push({ path: path.trim(), operation: op, content: (content || '').trim() })
+
+    // Extract <after_content> if present, otherwise use raw inner content
+    const afterMatch = /<after_content>([\s\S]*?)<\/after_content>/.exec(innerContent || '')
+    const content = afterMatch?.[1] ? afterMatch[1].trim() : (innerContent || '').trim()
+
+    changes.push({ path: path.trim(), operation: op, content })
   }
 
   return changes

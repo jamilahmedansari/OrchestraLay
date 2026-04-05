@@ -27,8 +27,8 @@ export const tasksRouter = router({
       // Rate limiting
       await enforceRateLimit(ctx.auth.keyId)
 
-      // Budget check
-      await enforceBudget(ctx.auth.projectId, ctx.auth.teamId)
+      // Budget check — at submit time estimated cost is unknown, pass 0 to check if budget is already exhausted
+      await enforceBudget(ctx.auth.teamId, 0)
 
       // Insert task
       const [task] = await db.insert(tasks).values({
